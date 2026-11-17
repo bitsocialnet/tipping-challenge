@@ -6,7 +6,7 @@ A [pkc-js](https://github.com/pkcprotocol/pkc-js) challenge that lets a communit
 
 ## What it does
 
-An author tips another author by sending them a token directly, wallet to wallet, and then replying to the comment being tipped. The reply carries the hash of the transaction. The community node looks the transaction up on chain and, if it really is a transfer from the replier's wallet to the wallet of the author being replied to, accepts the reply and writes the verified amount into that reply's comment update.
+An author tips another author by sending them a token directly, wallet to wallet, and then replying to the comment being tipped. The reply is published with the hash of the transaction as a challenge pre-answer. The community node looks the transaction up on chain and, if it really is a transfer from the replier's wallet to the wallet of the author being replied to, accepts the reply and writes the verified amount into that reply's comment update.
 
 There is no tipping contract and no chain of its own. The payment is an ordinary ERC-20 transfer, ERC-721 transfer or native coin send.
 
@@ -60,26 +60,25 @@ Rules that apply to the whole list:
 
 A percentage fee is rounded **down**: `fee = floor(amount × percent / 100)`. A client may pay more. When the result is 0, no fee is owed.
 
-Example (the addresses are placeholders, not real tokens):
+Example. The first ERC-20 is Bitsocial's $BSO on Ethereum mainnet. The other contract addresses are placeholders, not real tokens:
 
 ```json
 [
   { "chainId": 1, "type": "native", "minAmount": "1000000000000000", "fee": { "percent": "2" } },
-  { "chainId": 1, "type": "erc20", "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001", "minAmount": "1000000", "fee": { "percent": "2.5" } },
+  { "chainId": 1, "type": "erc20", "address": "0xB50cea4c109dc223A10d44c14f521CaeD91DaB5A", "fee": { "percent": "2.5" } },
   { "chainId": 1, "type": "erc20", "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0002", "fee": { "amount": "500000000000000000" } },
-  { "chainId": 1, "type": "erc721", "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001", "fee": { "amount": "1000000", "token": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001" } },
+  { "chainId": 1, "type": "erc721", "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001", "fee": { "amount": "1000000", "token": "0xB50cea4c109dc223A10d44c14f521CaeD91DaB5A" } },
   { "chainId": 1, "type": "erc721", "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0002" }
 ]
 ```
 
 ### The tip claim
 
-A tip is a **reply** to the comment being tipped. The reply carries an author-signed claim:
+A tip is a **reply** to the comment being tipped. The client sends the tip claim as a **challenge pre-answer**: an entry in the `challengeAnswers` of the publish request, keyed by the index of the tipping challenge, holding the claim as JSON text.
 
 ```js
-author: {
-  // ...
-  tip: { chainId: 1, txHash: "0x…", feeTxHash: "0x…" }
+challengeAnswers: {
+  "2": JSON.stringify({ chainId: 1, txHash: "0x…", feeTxHash: "0x…" })
 }
 ```
 
@@ -89,9 +88,11 @@ author: {
 | `txHash` | yes | The transaction that carries the tip |
 | `feeTxHash` | no | The transaction that carries the fee, when it is not the same one. Left out when no fee is owed or when the fee is in the tip's own transaction |
 
-**Where the claim goes.** Publish it at `comment.author.tip`. pkc-js `createComment` rejects an unknown top-level key (`ERR_INVALID_CREATE_COMMENT_ARGS_SCHEMA`) but accepts and signs unknown keys under `author`. A community node does accept unknown top-level keys on the wire, so this challenge also reads a top-level `comment.tip`, for when pkc-js allows creating one. If both are present they must be the same claim, or the reply is rejected.
+**Which index.** `challengeAnswers` is a record keyed by the position of a challenge in `community.challenges`, as a decimal string (pkc-js 0.0.152 and later; earlier versions used a positional array and cannot carry this). Find the entry whose `publicOptions` carry `tipping/v1/tokens` and use its position. The claim is never sent under any other key: the challenge reads only its own index.
 
-The claim carries only those three keys. Any other key is rejected, so a claim cannot carry fields that look like the verified result.
+**What the challenge reads.** pkc-js hands the challenge the answer at its own index as `challengeAnswer`. No answer means no claim, and the reply passes untouched. The claim is not part of the signed comment, so it is not stored with the reply and not visible to other peers. Only the community node that receives the request sees it.
+
+The claim carries only those three keys. Any other key is rejected, so a claim cannot carry fields that look like the verified result. An answer that is not JSON, or not an object, is rejected.
 
 ### What a valid tip is
 
@@ -212,13 +213,18 @@ Proofs signed with the older `pkc-author-wallet` or `plebbit-author-wallet` stri
 
 The BSIP is still a draft, so these rules can change with it. It asks community nodes to verify wallet proofs on acceptance; once pkc-js does, the check here becomes a second line of defence.
 
+## Future work
+
+- **Let a verified tip skip the community's other challenges.** A community could treat a tip that passes this challenge as proof of effort and excuse that author from its other challenges (a captcha, a question) for that reply. pkc-js has no way for one challenge to excuse the others today, so this needs support there first. It must stay opt-in per community, since a tip proves a payment and not good behaviour.
+
 ## Known gaps
 
 - **One transaction can be claimed once in each community.** A plain transfer names no comment, so the same payment can back a tip reply in community A and another in community B, as long as the recipient has a comment in both. Only a tipping contract that records the tipped comment would close this.
 - **An old payment after the comment was posted.** The freshness rule only rejects transactions older than the tipped comment. A real, unrelated payment made to the same author after that comment was posted can be claimed as a tip on it, once.
+- **The tipper no longer signs which reply a payment is for.** The claim travels in the publish request, not in the signed comment, so a community could attach a real payment to a different reply by the same tipper. It still cannot invent a payment: the verified result names the transaction, and the transfer must run between the two authors' proven wallets.
 - **Comment timestamps are chosen by authors.** The freshness rule compares a block time with the parent comment's own `timestamp`.
 - **Communities that hide authors.** The recipient's wallet proof is checked against the signing key stored with the parent comment. A community that replaces author identities (pseudonymity) may store a different key there, in which case tips are rejected. This combination has not been tested.
-- **Excluded authors.** An author excused from this challenge by an `exclude` rule can publish an unverified claim. No verified result is written for it, which is why clients must read the verified result and not the claim.
+- **Excluded authors.** An author excused from this challenge by an `exclude` rule skips verification. No verified result is written for their reply, so a tip they paid does not show.
 
 ## For UI client developers
 
@@ -272,19 +278,23 @@ How the transaction is produced is outside this contract.
 
 Wait until the transaction, and the fee transaction if any, are mined. An unmined transaction is rejected with a message asking the author to publish again.
 
-Then publish the reply with the claim under `author`:
+Then publish the reply with the claim as a pre-answer, keyed by the tipping challenge's index:
 
 ```js
+const challengeIndex = community.challenges.findIndex((c) => c.publicOptions?.["tipping/v1/tokens"]);
+
 const reply = await pkc.createComment({
   communityAddress,
   parentCid: tippedComment.cid,
   postCid: tippedComment.postCid,
   content: "great post",
-  author: { ...account.author, tip: { chainId: 1, txHash, feeTxHash } }
+  challengeRequest: {
+    challengeAnswers: { [String(challengeIndex)]: JSON.stringify({ chainId: 1, txHash, feeTxHash }) }
+  }
 });
 ```
 
-If the publication is rejected for an unrelated reason, publish **the same signed publication** again. A transaction is held for the publication that first claimed it, and released for another publication only after 15 minutes without the first one landing.
+If the publication is rejected for an unrelated reason, publish **the same signed publication** again, with the same pre-answer. A transaction is held for the publication that first claimed it, and released for another publication only after 15 minutes without the first one landing.
 
 ### 5. Display verified tips only
 
@@ -295,7 +305,7 @@ Show a tip only when both are true:
 
 Do not display from the author's claim. In a community that does not run this challenge, anyone can publish a reply with any `tip` field they like, and nothing has checked it.
 
-The claim sits at `author.tip` and the verified result at the top level of the comment update, so on a `Comment` instance they are `comment.author.tip` and `comment.tip`. A claim published at the top level of the comment would share the name `tip` with the verified result, since pkc-js merges comment and comment-update fields onto one instance. Read the verified result from the comment update explicitly if you support that form.
+The claim is not stored with the reply. The verified result sits at the top level of the comment update, so on a `Comment` instance it is `comment.tip`.
 
 Before displaying a tip, verify the wallets it names: `tip.from` must be the address of a valid `author.wallets` entry of the reply's author, and `tip.to` the address of a valid entry of the tipped comment's author. That check needs no network.
 
@@ -324,7 +334,7 @@ Add the challenge to the community's `settings.challenges`. Option values are st
   options: {
     "tipping/v1/tokens": JSON.stringify([
       { chainId: 1, type: "native", minAmount: "1000000000000000" },
-      { chainId: 1, type: "erc20", address: "0x…", fee: { percent: "2.5" } }
+      { chainId: 1, type: "erc20", address: "0xB50cea4c109dc223A10d44c14f521CaeD91DaB5A", fee: { percent: "2.5" } }
     ]),
     "tipping/v1/feeRecipient": "0x…",
     rpcUrls: JSON.stringify({ "1": "https://your-eth-node.example" })

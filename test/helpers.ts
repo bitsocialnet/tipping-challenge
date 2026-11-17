@@ -281,15 +281,15 @@ let publicationCounter = 0;
 export const makeRequest = async (
   author: TestAuthor,
   options: {
+    // The tip claim. It travels as the pre-answer of the tipping challenge, as JSON text.
     tip?: unknown;
+    // A pre-answer sent verbatim, for text that is not the JSON of a claim.
+    rawAnswer?: string;
     parentCid?: string | null;
     wallets?: Record<string, unknown> | null;
     // The key the author's wallet entry sits under. tipping/v1 does not read it.
     walletKey?: string;
     signature?: string;
-    // Where the claim goes. "author" is what clients publish today.
-    tipLocation?: "author" | "topLevel";
-    topLevelTip?: unknown;
   } = {}
 ): Promise<GetChallengeArgsInput["challengeRequestMessage"]> => {
   const wallets =
@@ -304,20 +304,22 @@ export const makeRequest = async (
     author: {
       address: author.keyAddress,
       publicKey: author.keyAddress,
-      ...(wallets ? { wallets } : {}),
-      ...(options.tip !== undefined && options.tipLocation !== "topLevel" ? { tip: options.tip } : {})
+      ...(wallets ? { wallets } : {})
     },
     signature: {
       type: "ed25519",
       signature: options.signature ?? `publicationSignature${++publicationCounter}`,
       publicKey: author.publicKey,
-      signedPropertyNames: ["content", "timestamp", "author", "parentCid", "tip"]
+      signedPropertyNames: ["content", "timestamp", "author", "parentCid"]
     }
   };
   if (options.parentCid !== null) comment["parentCid"] = options.parentCid ?? PARENT_CID;
-  if (options.tip !== undefined && options.tipLocation === "topLevel") comment["tip"] = options.tip;
-  if (options.topLevelTip !== undefined) comment["tip"] = options.topLevelTip;
-  return { comment } as unknown as GetChallengeArgsInput["challengeRequestMessage"];
+  const answer = options.rawAnswer ?? (options.tip !== undefined ? JSON.stringify(options.tip) : undefined);
+  return {
+    comment,
+    // Pre-answers are keyed by challenge index as a decimal string. The tipping challenge is index 0.
+    ...(answer !== undefined ? { challengeAnswers: { "0": answer } } : {})
+  } as unknown as GetChallengeArgsInput["challengeRequestMessage"];
 };
 
 export const buildSettings = (params: {

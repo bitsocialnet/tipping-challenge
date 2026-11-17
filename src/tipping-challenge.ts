@@ -11,7 +11,7 @@ import {
   getKeyAddressFromPublicKey,
   getRequiredFee,
   isConfigAddress,
-  parseTipClaim,
+  parseTipClaimAnswer,
   parseTipTokens,
   TIPPING_V1_FEE_RECIPIENT_OPTION,
   TIPPING_V1_TOKENS_OPTION,
@@ -342,19 +342,17 @@ const describeRpcError = (e: unknown): string => (e instanceof Error ? e.message
 const getChallenge = async ({
   challengeSettings,
   challengeRequestMessage,
+  challengeAnswer,
   community
 }: GetChallengeArgsInput): Promise<ChallengeResultInput> => {
   // Only comments can carry a tip. Votes, edits and moderations pass untouched.
   const comment = challengeRequestMessage.comment;
   if (!comment) return { success: true };
 
-  // The claim is author-signed either way. `author.tip` is where clients put it today: pkc-js rejects an
-  // unknown top-level key in createComment but signs unknown keys under `author`. The top level is also
-  // read, since a community node accepts unknown top-level keys on the wire.
-  const authorClaim = (comment.author as unknown as { tip?: unknown } | undefined)?.tip;
-  const topLevelClaim = (comment as unknown as { tip?: unknown }).tip;
-  const rawClaim = authorClaim ?? topLevelClaim;
-  if (rawClaim === undefined) return { success: true };
+  // The claim is this challenge's pre-answer: a JSON string the client put in the request's
+  // challengeAnswers under this challenge's index. pkc-js hands it over as `challengeAnswer`. No answer
+  // means no tip, and the reply passes untouched.
+  if (challengeAnswer === undefined) return { success: true };
 
   // validateChallengeSettings rejects a bad config at edit time, so reaching this catch means a config
   // that predates the hook. Fail the tip loudly rather than accept it unverified.
@@ -367,13 +365,7 @@ const getChallenge = async ({
 
   let claim: TipClaim;
   try {
-    claim = parseTipClaim(rawClaim);
-    if (authorClaim !== undefined && topLevelClaim !== undefined) {
-      const other = parseTipClaim(topLevelClaim);
-      if (other.chainId !== claim.chainId || other.txHash !== claim.txHash || other.feeTxHash !== claim.feeTxHash) {
-        throw new Error("author.tip and the top-level tip are both present and differ. Publish the claim once");
-      }
-    }
+    claim = parseTipClaimAnswer(challengeAnswer);
   } catch (e) {
     return fail(`Invalid tip: ${(e as Error).message}`);
   }
@@ -514,7 +506,7 @@ const getChallenge = async ({
       // own transaction already spent its value on the recipient, so the fee needs its own transaction.
       if (sameTx) {
         return fail(
-          "This tip owes the community a fee in the native coin, which must be a separate transaction. Send it to the fee recipient and put its hash in tip.feeTxHash."
+          "This tip owes the community a fee in the native coin, which must be a separate transaction. Send it to the fee recipient and put its hash in feeTxHash."
         );
       }
       if (feeTx.value !== undefined && includesAddress(senders, feeTx.from) && sameAddress(feeTx.to, feeRecipient)) {
@@ -541,7 +533,7 @@ const getChallenge = async ({
       return fail(
         `This tip owes the community a fee of ${requiredFee.amount} in ${feeTokenText}, sent from one of your proven wallets to ${feeRecipient}. ` +
           (sameTx
-            ? "No such transfer is in the tip transaction. Send it and put its hash in tip.feeTxHash."
+            ? "No such transfer is in the tip transaction. Send it and put its hash in feeTxHash."
             : "The fee transaction does not contain it.")
       );
     }
