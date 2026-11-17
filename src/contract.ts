@@ -26,7 +26,9 @@ export interface TipFeeFlat {
 export type TipFee = TipFeePercent | TipFeeFlat;
 
 export interface TipToken {
-  chainTicker: string;
+  // The numeric chain ID, e.g. 1 for Ethereum mainnet. Chains are never named by ticker in this contract:
+  // a ticker is a label anyone can reuse, a chain ID is what a wallet and an RPC actually agree on.
+  chainId: number;
   type: TipTokenType;
   address?: string;
   minAmount?: string;
@@ -34,14 +36,14 @@ export interface TipToken {
 }
 
 export interface TipClaim {
-  chainTicker: string;
+  chainId: number;
   txHash: string;
   feeTxHash?: string;
 }
 
 // What the challenge writes into the tip reply's comment update.
 export interface VerifiedTip {
-  chainTicker: string;
+  chainId: number;
   txHash: string;
   type: TipTokenType;
   token?: string;
@@ -58,8 +60,8 @@ export interface VerifiedTip {
 }
 
 const TOKEN_TYPES: readonly TipTokenType[] = ["native", "erc20", "erc721"];
-const TOKEN_KEYS = ["chainTicker", "type", "address", "minAmount", "fee"];
-const CLAIM_KEYS = ["chainTicker", "txHash", "feeTxHash"];
+const TOKEN_KEYS = ["chainId", "type", "address", "minAmount", "fee"];
+const CLAIM_KEYS = ["chainId", "txHash", "feeTxHash"];
 
 const ADDRESS_REGEXP = /^0x[0-9a-fA-F]{40}$/;
 const TX_HASH_REGEXP = /^0x[0-9a-fA-F]{64}$/;
@@ -67,6 +69,12 @@ const UNSIGNED_INTEGER_REGEXP = /^(0|[1-9]\d*)$/;
 // At most four decimal places, so a percentage is an exact integer once scaled by 10^4.
 const PERCENT_REGEXP = /^\d+(\.\d{1,4})?$/;
 const PERCENT_SCALE = 10_000n;
+
+// A chain ID is a JSON number, a positive integer. "1" (a string) is not one.
+export const isChainId = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+const CHAIN_ID_HINT = "a positive integer such as 1 for Ethereum mainnet, written as a number, not a string";
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -161,8 +169,8 @@ const parseFee = (fee: unknown, type: TipTokenType, where: string): TipFee => {
   return { amount: fee["amount"] as string };
 };
 
-export const tokenKey = (token: Pick<TipToken, "chainTicker" | "type" | "address">): string =>
-  `${token.chainTicker}\n${token.type === "native" ? "native" : (token.address ?? "").toLowerCase()}`;
+export const tokenKey = (token: Pick<TipToken, "chainId" | "type" | "address">): string =>
+  `${token.chainId}\n${token.type === "native" ? "native" : (token.address ?? "").toLowerCase()}`;
 
 // Parses and fully validates the tipping/v1/tokens option. Throws an Error written for a community owner.
 // The challenge uses this both when settings are saved and on every request, so a list accepted at edit
@@ -197,23 +205,28 @@ export const parseTipTokens = (raw: string | undefined): TipToken[] => {
     if (!isPlainObject(entry)) {
       throw new Error(`${where} must be an object`);
     }
+    if (entry["chainTicker"] !== undefined) {
+      throw new Error(
+        `${where} uses chainTicker. tipping/v1 identifies a chain by its numeric chainId only (${CHAIN_ID_HINT})`
+      );
+    }
     for (const key of Object.keys(entry)) {
       if (!TOKEN_KEYS.includes(key)) {
         throw new Error(`${where} has an unknown key "${key}". Known keys: ${TOKEN_KEYS.join(", ")}`);
       }
     }
 
-    const { chainTicker, type, address, minAmount, fee } = entry;
+    const { chainId, type, address, minAmount, fee } = entry;
 
-    if (typeof chainTicker !== "string" || chainTicker.length === 0) {
-      throw new Error(`${where}.chainTicker must be a non-empty string`);
+    if (!isChainId(chainId)) {
+      throw new Error(`${where}.chainId must be ${CHAIN_ID_HINT}, got ${JSON.stringify(chainId)}`);
     }
     if (typeof type !== "string" || !(TOKEN_TYPES as readonly string[]).includes(type)) {
       throw new Error(`${where}.type must be one of ${TOKEN_TYPES.join(", ")}, got ${JSON.stringify(type)}`);
     }
     const tokenType = type as TipTokenType;
 
-    const token: TipToken = { chainTicker, type: tokenType };
+    const token: TipToken = { chainId, type: tokenType };
 
     if (tokenType === "native") {
       if (address !== undefined) {
@@ -280,16 +293,19 @@ export const getRequiredFee = (
 // update, and a claim must not be able to carry fields that look like that result.
 export const parseTipClaim = (value: unknown): TipClaim => {
   if (!isPlainObject(value)) {
-    throw new Error("tip must be an object: { chainTicker, txHash, feeTxHash? }");
+    throw new Error("tip must be an object: { chainId, txHash, feeTxHash? }");
+  }
+  if (value["chainTicker"] !== undefined) {
+    throw new Error(`tip uses chainTicker. A tip claim names its chain by numeric chainId only (${CHAIN_ID_HINT})`);
   }
   for (const key of Object.keys(value)) {
     if (!CLAIM_KEYS.includes(key)) {
       throw new Error(`tip has an unknown key "${key}". A tip claim only carries ${CLAIM_KEYS.join(", ")}`);
     }
   }
-  const { chainTicker, txHash, feeTxHash } = value;
-  if (typeof chainTicker !== "string" || chainTicker.length === 0) {
-    throw new Error("tip.chainTicker must be a non-empty string");
+  const { chainId, txHash, feeTxHash } = value;
+  if (!isChainId(chainId)) {
+    throw new Error(`tip.chainId must be ${CHAIN_ID_HINT}`);
   }
   if (!isTxHash(txHash)) {
     throw new Error("tip.txHash must be a transaction hash: 0x followed by 64 hex characters");
@@ -298,7 +314,7 @@ export const parseTipClaim = (value: unknown): TipClaim => {
     throw new Error("tip.feeTxHash must be a transaction hash: 0x followed by 64 hex characters");
   }
 
-  const claim: TipClaim = { chainTicker, txHash: txHash.toLowerCase() };
+  const claim: TipClaim = { chainId, txHash: txHash.toLowerCase() };
   if (feeTxHash !== undefined) claim.feeTxHash = feeTxHash.toLowerCase();
   return claim;
 };

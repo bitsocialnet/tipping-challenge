@@ -28,35 +28,36 @@ import {
   zksync
 } from "viem/chains";
 
-// chainTicker is free-form in pkc-js, so this map is ours to own and will always be partial. viem's
-// http() transport has no default RPC unless the client is given a chain, so a ticker outside this map
-// has no default and must come with rpcUrls.
-const chainsByTicker: Record<string, Chain> = {
-  eth: mainnet,
-  matic: polygon,
-  pol: polygon,
-  op: optimism,
-  arb: arbitrum,
-  base: base,
-  avax: avalanche,
-  bnb: bsc,
-  bsc: bsc,
-  gno: gnosis,
-  xdai: gnosis,
-  celo: celo,
-  ftm: fantom,
-  linea: linea,
-  scroll: scroll,
-  zksync: zksync,
-  blast: blast
-};
+// The chains viem ships a public RPC for. viem's http() transport has no default RPC unless the client
+// is given a chain, so a chain ID outside this map has no default and must come with rpcUrls.
+const builtInChains: readonly Chain[] = [
+  mainnet,
+  optimism,
+  bsc,
+  gnosis,
+  polygon,
+  fantom,
+  zksync,
+  base,
+  arbitrum,
+  celo,
+  avalanche,
+  linea,
+  blast,
+  scroll
+];
 
-export const knownChainTickers = Object.keys(chainsByTicker);
+const chainsById = new Map<number, Chain>(builtInChains.map((chain) => [chain.id, chain]));
 
-// hasOwnProperty rather than a bare index, so a chainTicker of "constructor" or "toString" does not
-// resolve to an inherited function and read as "this ticker has a built-in RPC".
-export const getChainFromTicker = (chainTicker: string): Chain | undefined =>
-  Object.prototype.hasOwnProperty.call(chainsByTicker, chainTicker) ? chainsByTicker[chainTicker] : undefined;
+export const knownChainIds: readonly number[] = [...chainsById.keys()].sort((a, b) => a - b);
+
+export const getChainFromId = (chainId: number): Chain | undefined => chainsById.get(chainId);
+
+const describeKnownChains = (): string => builtInChains.map((chain) => `${chain.id} (${chain.name})`).join(", ");
+
+export const rpcUrlsRequiredMessage = (chainId: number): string =>
+  `option rpcUrls is required for chain ID ${chainId}: it has no built-in RPC. ` +
+  `Chain IDs with a built-in RPC are: ${describeKnownChains()}.`;
 
 const splitUrls = (urls: string): string[] =>
   urls
@@ -64,13 +65,17 @@ const splitUrls = (urls: string): string[] =>
     .map((url) => url.trim())
     .filter(Boolean);
 
-// The rpcUrls option is either a comma-separated list of URLs, which applies to every chain in the token
-// list (so it only makes sense with one chain), or a JSON object mapping a chainTicker to such a list.
-export const parseRpcUrls = (rpcUrls: string | undefined): { all: string[]; byChain: Record<string, string[]> } => {
-  const trimmed = (rpcUrls ?? "").trim();
-  if (!trimmed) return { all: [], byChain: {} };
+const CHAIN_ID_KEY_REGEXP = /^[1-9]\d*$/;
 
-  if (!trimmed.startsWith("{")) return { all: splitUrls(trimmed), byChain: {} };
+// The rpcUrls option is either a JSON object mapping a chain ID (as a string key, since JSON keys are
+// strings) to a comma-separated list of URLs, or a plain comma-separated list. The plain list names no
+// chain, so it is only allowed when every token is on one chain ID.
+export const parseRpcUrls = (rpcUrls: string | undefined): { all: string[]; byChainId: Map<number, string[]> } => {
+  const byChainId = new Map<number, string[]>();
+  const trimmed = (rpcUrls ?? "").trim();
+  if (!trimmed) return { all: [], byChainId };
+
+  if (!trimmed.startsWith("{")) return { all: splitUrls(trimmed), byChainId };
 
   let parsed: unknown;
   try {
@@ -79,25 +84,27 @@ export const parseRpcUrls = (rpcUrls: string | undefined): { all: string[]; byCh
     throw new Error(`option rpcUrls looks like a JSON object but is not valid JSON: ${(e as Error).message}`);
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("option rpcUrls must be a comma-separated list of URLs or a JSON object of chainTicker to URLs");
+    throw new Error("option rpcUrls must be a JSON object of chain ID to URLs, or a comma-separated list of URLs");
   }
 
-  const byChain: Record<string, string[]> = {};
-  for (const [chainTicker, urls] of Object.entries(parsed)) {
-    if (typeof urls !== "string") {
-      throw new Error(`option rpcUrls["${chainTicker}"] must be a string of comma-separated URLs`);
+  for (const [key, urls] of Object.entries(parsed)) {
+    if (!CHAIN_ID_KEY_REGEXP.test(key) || !Number.isSafeInteger(Number(key))) {
+      throw new Error(`option rpcUrls has the key "${key}", which is not a chain ID. Keys are chain IDs such as "1"`);
     }
-    byChain[chainTicker] = splitUrls(urls);
+    if (typeof urls !== "string") {
+      throw new Error(`option rpcUrls["${key}"] must be a string of comma-separated URLs`);
+    }
+    byChainId.set(Number(key), splitUrls(urls));
   }
-  return { all: [], byChain };
+  return { all: [], byChainId };
 };
 
-export const getRpcUrlsForChain = (rpcUrls: string | undefined, chainTicker: string): string[] => {
-  const { all, byChain } = parseRpcUrls(rpcUrls);
-  return Object.prototype.hasOwnProperty.call(byChain, chainTicker) ? (byChain[chainTicker] ?? []) : all;
+export const getRpcUrlsForChain = (rpcUrls: string | undefined, chainId: number): string[] => {
+  const { all, byChainId } = parseRpcUrls(rpcUrls);
+  return byChainId.get(chainId) ?? all;
 };
 
-type TransportFactory = (args: { chainTicker: string; urls: string[] }) => Transport;
+type TransportFactory = (args: { chainId: number; urls: string[] }) => Transport;
 
 const defaultTransportFactory: TransportFactory = ({ urls }) =>
   urls.length === 0
@@ -111,33 +118,60 @@ const defaultTransportFactory: TransportFactory = ({ urls }) =>
 
 let transportFactory: TransportFactory = defaultTransportFactory;
 
-// Clients are cached per (chainTicker, urls): fallback(..., { rank: true }) starts a background interval
+// Clients are cached per (chain ID, urls): fallback(..., { rank: true }) starts a background interval
 // that is never torn down, so building a client per request would leak a timer per publish.
 const clientCache = new Map<string, PublicClient>();
 
-// Test seams. Not re-exported from index.ts, so they are not part of the package's public API.
+// Clients whose RPC has reported the chain ID they were built for. Only a confirmation is remembered: a
+// failed or mismatched check is repeated on the next tip, so an owner who fixes the endpoint, or an
+// endpoint that comes back, recovers without a restart.
+const confirmedClients = new WeakSet<PublicClient>();
+
+// Test seam. Not re-exported from index.ts, so it is not part of the package's public API.
 export const _setTransportFactoryForTests = (factory: TransportFactory | undefined): void => {
   transportFactory = factory ?? defaultTransportFactory;
   clientCache.clear();
 };
 
-export const getChainClient = (rpcUrls: string | undefined, chainTicker: string): PublicClient => {
-  const urls = getRpcUrlsForChain(rpcUrls, chainTicker);
-  const chain = getChainFromTicker(chainTicker);
+const getChainClient = (rpcUrls: string | undefined, chainId: number): PublicClient => {
+  const urls = getRpcUrlsForChain(rpcUrls, chainId);
+  const chain = getChainFromId(chainId);
 
   if (urls.length === 0 && !chain) {
-    throw new Error(
-      `option rpcUrls is required for chainTicker "${chainTicker}": it has no built-in RPC. ` +
-        `Tickers with a built-in RPC are: ${knownChainTickers.join(", ")}.`
-    );
+    throw new Error(rpcUrlsRequiredMessage(chainId));
   }
 
-  const cacheKey = `${chainTicker}\n${urls.join(",")}`;
+  const cacheKey = `${chainId}\n${urls.join(",")}`;
   const cached = clientCache.get(cacheKey);
   if (cached) return cached;
 
-  const client = createPublicClient({ chain, transport: transportFactory({ chainTicker, urls }) });
+  const client = createPublicClient({ chain, transport: transportFactory({ chainId, urls }) });
   clientCache.set(cacheKey, client);
+  return client;
+};
+
+export class ChainIdMismatchError extends Error {
+  constructor(expected: number, reported: number) {
+    super(
+      `The RPC configured for chain ID ${expected} reports chain ID ${reported}. ` +
+        `The community's rpcUrls point at the wrong chain, so the tip cannot be verified.`
+    );
+    this.name = "ChainIdMismatchError";
+  }
+}
+
+// The only way to get a client for reading transactions. It returns one only after the RPC behind it has
+// answered eth_chainId with the expected ID, so a transfer is never verified on another chain: a chain
+// where the same token address or the same transaction hash means something else, or nothing.
+export const getConfirmedChainClient = async (rpcUrls: string | undefined, chainId: number): Promise<PublicClient> => {
+  const client = getChainClient(rpcUrls, chainId);
+  if (confirmedClients.has(client)) return client;
+
+  const reported = await client.getChainId();
+  if (reported !== chainId) {
+    throw new ChainIdMismatchError(chainId, reported);
+  }
+  confirmedClients.add(client);
   return client;
 };
 
@@ -201,7 +235,7 @@ const decodeTransfers = (
 };
 
 // Reads everything the challenge needs about one transaction. Returns undefined when the transaction is
-// not mined yet. Any other RPC failure throws.
+// not mined yet. Any other RPC failure throws. `client` must come from getConfirmedChainClient.
 export const readTransaction = async ({
   client,
   hash,

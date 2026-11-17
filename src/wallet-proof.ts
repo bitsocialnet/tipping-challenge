@@ -37,7 +37,7 @@ const checkSignatureEncoding = (signature: unknown): string | undefined => {
   return undefined;
 };
 
-// Verifies one `author.wallets[chainTicker]` entry against the key address of the author's signing key.
+// Verifies one entry of `author.wallets` against the key address of the author's signing key.
 // pkc-js only checks the entry's shape, so without this anyone could list a wallet they do not control.
 //
 // Follows the "Author Wallet Proofs" BSIP draft.

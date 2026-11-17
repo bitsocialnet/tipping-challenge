@@ -35,7 +35,7 @@ This package is one implementation. Anything that publishes `tipping/v1/tokens` 
 
 | Field | Required | Meaning |
 |---|---|---|
-| `chainTicker` | yes | The chain, as used for the keys of `author.wallets`, e.g. `eth` |
+| `chainId` | yes | The numeric chain ID, as a JSON number: `1` for Ethereum mainnet, `8453` for Base. A positive integer, never a string |
 | `type` | yes | `native`, `erc20` or `erc721` |
 | `address` | for `erc20` and `erc721` | The token contract. Left out for `native` |
 | `minAmount` | no | Smallest tip accepted. Not allowed for `erc721` |
@@ -49,10 +49,12 @@ This package is one implementation. Anything that publishes `tipping/v1/tokens` 
 | `{ "amount": "500" }` | `native`, `erc20` | A flat amount per tip, paid in the same token |
 | `{ "amount": "1000000", "token": "0x…" }` | `erc721` | A flat amount per tip, paid in the named ERC-20. `token` is required here and not allowed elsewhere |
 
+Chains are identified by chain ID only. There is no `chainTicker` anywhere in this contract: a ticker is a label that anyone can reuse for another network, while a chain ID is what a wallet and an RPC actually agree on. An entry that carries `chainTicker` is invalid.
+
 Rules that apply to the whole list:
 
 - Every amount is a **string holding an unsigned integer in the token's smallest unit** (wei for ETH, 6-decimal units for a 6-decimal token). There are no decimals, so there is no rounding.
-- A token appears once. Two entries with the same `chainTicker` and contract (compared without regard to case), or two `native` entries on one chain, are rejected.
+- A token appears once. Two entries with the same `chainId` and contract (compared without regard to case), or two `native` entries on one chain ID, are rejected.
 - Addresses are literal `0x` addresses, never names. A mixed-case address must carry a valid EIP-55 checksum; all lowercase is accepted.
 - At most 64 entries. Unknown keys are rejected.
 
@@ -62,11 +64,11 @@ Example (the addresses are placeholders, not real tokens):
 
 ```json
 [
-  { "chainTicker": "eth", "type": "native", "minAmount": "1000000000000000", "fee": { "percent": "2" } },
-  { "chainTicker": "eth", "type": "erc20", "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001", "minAmount": "1000000", "fee": { "percent": "2.5" } },
-  { "chainTicker": "eth", "type": "erc20", "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0002", "fee": { "amount": "500000000000000000" } },
-  { "chainTicker": "eth", "type": "erc721", "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001", "fee": { "amount": "1000000", "token": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001" } },
-  { "chainTicker": "eth", "type": "erc721", "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0002" }
+  { "chainId": 1, "type": "native", "minAmount": "1000000000000000", "fee": { "percent": "2" } },
+  { "chainId": 1, "type": "erc20", "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001", "minAmount": "1000000", "fee": { "percent": "2.5" } },
+  { "chainId": 1, "type": "erc20", "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0002", "fee": { "amount": "500000000000000000" } },
+  { "chainId": 1, "type": "erc721", "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001", "fee": { "amount": "1000000", "token": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001" } },
+  { "chainId": 1, "type": "erc721", "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0002" }
 ]
 ```
 
@@ -77,13 +79,13 @@ A tip is a **reply** to the comment being tipped. The reply carries an author-si
 ```js
 author: {
   // ...
-  tip: { chainTicker: "eth", txHash: "0x…", feeTxHash: "0x…" }
+  tip: { chainId: 1, txHash: "0x…", feeTxHash: "0x…" }
 }
 ```
 
 | Field | Required | Meaning |
 |---|---|---|
-| `chainTicker` | yes | The chain the transaction is on |
+| `chainId` | yes | The numeric chain ID the transaction is on, as a number |
 | `txHash` | yes | The transaction that carries the tip |
 | `feeTxHash` | no | The transaction that carries the fee, when it is not the same one. Left out when no fee is owed or when the fee is in the tip's own transaction |
 
@@ -96,24 +98,43 @@ The claim carries only those three keys. Any other key is rejected, so a claim c
 For a reply that carries a claim, all of these must hold. Each is a separate rejection with its own message.
 
 1. The publication is a reply, not a post. The recipient is the author of the parent comment.
-2. The community accepts at least one token on `chainTicker`.
+2. The community accepts at least one token on `chainId`.
 3. The parent comment exists in this community.
-4. The tipper is not the recipient: different signing keys, and different wallets.
-5. The tipper's `author.wallets[chainTicker]` is a valid [wallet proof](#wallet-proofs).
-6. The parent comment's `author.wallets[chainTicker]` is a valid wallet proof for the parent's author.
-7. The transaction is mined and succeeded.
-8. The transaction's block is not older than the parent comment's `timestamp`.
-9. The transaction moves an accepted token from the tipper's wallet to the recipient's wallet. See [Finding the tip](#finding-the-tip).
-10. The amount is at least the token's `minAmount`, if set.
-11. The fee, if the token has one and it does not round down to 0, was paid. See [The fee](#the-fee).
-12. Neither the tip transaction nor the fee transaction has backed another tip in this community.
+4. The tipper is not the recipient: the two signing keys differ.
+5. The tipper has at least one valid entry in `author.wallets`. See [Which wallets count](#which-wallets-count).
+6. The parent comment's author has at least one valid entry in `author.wallets` that the tipper has not also proven as their own.
+7. The RPC the community uses for `chainId` reports that chain ID. See [The chain](#the-chain).
+8. The transaction is mined and succeeded.
+9. The transaction's block is not older than the parent comment's `timestamp`.
+10. The transaction moves an accepted token from one of the tipper's wallets to one of the recipient's wallets. See [Finding the tip](#finding-the-tip).
+11. The amount is at least the token's `minAmount`, if set.
+12. The fee, if the token has one and it does not round down to 0, was paid. See [The fee](#the-fee).
+13. Neither the tip transaction nor the fee transaction has backed another tip on that chain ID in this community.
+
+### Which wallets count
+
+`author.wallets` is keyed by a ticker the author chose, and this contract does not use tickers. So the key is ignored:
+
+- **Every validly proven entry counts**, whatever key it sits under. A [wallet proof](#wallet-proofs) shows control of an address, and an address is the same on every EVM chain.
+- **An entry that fails verification is ignored.** It does not cause a rejection, so one stale entry does not stop an author who also has a good one.
+- **The transfer's sender** must equal the address of some valid entry of the tipper. **The transfer's receiver** must equal the address of some valid entry of the author being tipped.
+- **A wallet the tipper has proven as their own is never a receiver**, even if the tipped author lists it too.
+- The tip is rejected only when no valid entry matches.
+
+### The chain
+
+The same token address, and even the same transaction hash, can exist on two chains and mean different things. So the community node never verifies a transfer on an RPC it has not checked:
+
+- Before reading anything, it asks the RPC configured for the claim's `chainId` for its chain ID (`eth_chainId`).
+- If the answer differs, or the RPC cannot be asked, the tip is rejected with a message saying so. No transaction is read.
+- A confirmation is remembered for the life of the process. A failure is not, so it is checked again on the next tip.
 
 ### Finding the tip
 
 The claim does not name a token, so the rule for which transfer is the tip is part of the contract:
 
-1. If the native coin is accepted on that chain, and the transaction itself was sent by the tipper's wallet to the recipient's wallet with a value above 0, the tip is that value.
-2. Otherwise the tip is the first `Transfer` event in the transaction, in log order, that is emitted by an accepted token contract, goes from the tipper's wallet to the recipient's wallet, and has the shape of that entry's `type`.
+1. If the native coin is accepted on that chain ID, and the transaction itself was sent by one of the tipper's wallets to one of the recipient's wallets with a value above 0, the tip is that value.
+2. Otherwise the tip is the first `Transfer` event in the transaction, in log order, that is emitted by a token contract accepted on that chain ID, goes from one of the tipper's wallets to one of the recipient's wallets, and has the shape of that entry's `type`.
 
 `from` is the sender in the event, not the account that submitted the transaction. An ERC-20 or ERC-721 tip sent through a batching or smart account therefore verifies normally.
 
@@ -123,12 +144,12 @@ Native coin is recognised only as a **direct send**. Coin moved by an inner call
 
 ### The fee
 
-The fee is a second transfer, from the tipper's wallet to `tipping/v1/feeRecipient`, of at least the owed amount. It is paid on top of the tip: the tip is whatever reached the recipient.
+The fee is a second transfer, on the same chain ID, from any of the tipper's valid wallets to `tipping/v1/feeRecipient`, of at least the owed amount. It need not come from the wallet that sent the tip. It is paid on top of the tip: the tip is whatever reached the recipient.
 
 | Fee is paid in | Where the challenge looks |
 |---|---|
-| An ERC-20 | A `Transfer` event of that token from the tipper's wallet to the fee recipient, in `feeTxHash` if given, else in `txHash`. It must be a different event from the tip itself |
-| The native coin | `feeTxHash` must be given and must differ from `txHash`. That transaction must be sent by the tipper's wallet to the fee recipient with a value of at least the fee |
+| An ERC-20 | A `Transfer` event of that token from one of the tipper's wallets to the fee recipient, in `feeTxHash` if given, else in `txHash`. It must be a different event from the tip itself |
+| The native coin | `feeTxHash` must be given and must differ from `txHash`. That transaction must be sent by one of the tipper's wallets to the fee recipient with a value of at least the fee |
 
 So an ERC-20 or ERC-721 tip can carry its fee in the same transaction when the wallet can batch, or in a separate one when it cannot. A native coin fee is always its own transaction.
 
@@ -142,12 +163,12 @@ On success the challenge writes this into the reply's comment update:
 
 ```js
 commentUpdate.tip = {
-  chainTicker: "eth",
+  chainId: 1,
   txHash: "0x…",
   type: "erc20",          // "native" | "erc20" | "erc721"
   token: "0x…",           // the token contract; absent for native
-  from: "0x…",            // the tipper's wallet
-  to: "0x…",              // the recipient's wallet
+  from: "0x…",            // the tipper's wallet the transfer came from
+  to: "0x…",              // the recipient's wallet it went to
   amount: "5000000",      // native and erc20: smallest unit, as a string
   tokenId: "4242",        // erc721 only, in place of amount
   fee: {                  // only when a fee was owed
@@ -222,15 +243,24 @@ function getTippingConfig(community) {
 
 Never look at which package produced the options. The record does not say, and you do not need it. If you bundle npm packages, `parseTipTokens` from this package validates the list exactly as the community node does.
 
-Offer a tip only when the comment's author has an `author.wallets` entry for a chain in the list, and the user has one too.
+Chains are named by `chainId` only. Offer a tip only when the comment's author has at least one valid `author.wallets` entry, and the user has one too.
 
-### 2. Check the recipient's wallet before sending money
+### 2. Pick the recipient's wallet, and verify it before sending money
 
 The community verifies the recipient's wallet proof, but it does so after the money has moved. Verify it yourself first, with the [wallet proof](#wallet-proofs) rules, so a user never pays an address the author does not control. `verifyWalletProof` and `getKeyAddressFromPublicKey` are exported from this package.
 
+The keys of `author.wallets` do not select a chain, so every client must pick the same entry by the same rule:
+
+1. Send to the tipped author's `eth` entry when it is valid.
+2. Otherwise send to the first valid entry, taking the keys in ascending order.
+
+If no entry is valid, do not offer a tip.
+
 ### 3. Send the payment
 
-Send the token from the wallet in the user's own `author.wallets[chainTicker]` to the wallet in the tipped comment's `author.wallets[chainTicker]`. If the token has a fee, also send the fee from the same wallet to `tipping/v1/feeRecipient`.
+**Check your own RPC's chain ID first.** Before sending, confirm that the wallet or RPC you send through reports the `chainId` of the token entry (`eth_chainId`). A transfer sent on another chain cannot be verified, and the money is gone either way.
+
+Send the token from a wallet the user has a valid `author.wallets` entry for, to the recipient wallet picked above. If the token has a fee, also send the fee, on the same chain ID, from any of the user's valid wallets to `tipping/v1/feeRecipient`.
 
 - Compute a percentage fee and round **up** if you want to be safe. The community requires at least the rounded-down amount.
 - If the wallet can batch (EIP-7702 or EIP-5792), put an ERC-20 fee in the same transaction as the tip. Otherwise send it separately and put its hash in `feeTxHash`.
@@ -250,7 +280,7 @@ const reply = await pkc.createComment({
   parentCid: tippedComment.cid,
   postCid: tippedComment.postCid,
   content: "great post",
-  author: { ...account.author, tip: { chainTicker: "eth", txHash, feeTxHash } }
+  author: { ...account.author, tip: { chainId: 1, txHash, feeTxHash } }
 });
 ```
 
@@ -267,7 +297,11 @@ Do not display from the author's claim. In a community that does not run this ch
 
 The claim sits at `author.tip` and the verified result at the top level of the comment update, so on a `Comment` instance they are `comment.author.tip` and `comment.tip`. A claim published at the top level of the comment would share the name `tip` with the verified result, since pkc-js merges comment and comment-update fields onto one instance. Read the verified result from the comment update explicitly if you support that form.
 
-To show a total on a comment, sum the verified tips of its loaded replies. To be independent of the community, re-check a tip against the chain with its `txHash`.
+Before displaying a tip, verify the wallets it names: `tip.from` must be the address of a valid `author.wallets` entry of the reply's author, and `tip.to` the address of a valid entry of the tipped comment's author. That check needs no network.
+
+A client is **not** required to fetch the transaction. The community node already read it from an RPC whose chain ID it confirmed. A client that wants to be independent of the community can re-check a tip against the chain with its `chainId` and `txHash`, but that is optional.
+
+To show a total on a comment, sum the verified tips of its loaded replies, per `chainId` and token.
 
 ## Installation
 
@@ -289,11 +323,11 @@ Add the challenge to the community's `settings.challenges`. Option values are st
   name: "@bitsocial/tipping-challenge",
   options: {
     "tipping/v1/tokens": JSON.stringify([
-      { chainTicker: "eth", type: "native", minAmount: "1000000000000000" },
-      { chainTicker: "eth", type: "erc20", address: "0x…", fee: { percent: "2.5" } }
+      { chainId: 1, type: "native", minAmount: "1000000000000000" },
+      { chainId: 1, type: "erc20", address: "0x…", fee: { percent: "2.5" } }
     ]),
     "tipping/v1/feeRecipient": "0x…",
-    rpcUrls: "https://your-eth-node.example"
+    rpcUrls: JSON.stringify({ "1": "https://your-eth-node.example" })
   },
   publicOptions: ["tipping/v1/tokens", "tipping/v1/feeRecipient"]
 }
@@ -303,22 +337,26 @@ Add the challenge to the community's `settings.challenges`. Option values are st
 |---|---|---|---|
 | `tipping/v1/tokens` | yes | must be | The token list |
 | `tipping/v1/feeRecipient` | when a token has a fee | must be, when set | Where fees are paid |
-| `rpcUrls` | for chains with no built-in RPC | must not be | JSON-RPC endpoints the node reads transactions from |
+| `rpcUrls` | for chain IDs with no built-in RPC | must not be | JSON-RPC endpoints the node reads transactions from |
 
-`rpcUrls` is either a comma-separated list of URLs, when all tokens are on one chain, or a JSON object mapping each `chainTicker` to such a list:
+`rpcUrls` is a JSON object keyed by chain ID. JSON keys are strings, so the chain ID is written as a string key. Each value is a comma-separated list of URLs:
 
 ```json
-{ "eth": "https://a.example,https://b.example", "base": "https://c.example" }
+{ "1": "https://a.example,https://b.example", "8453": "https://c.example" }
 ```
 
-Chains with a built-in public RPC: `eth`, `matic`, `pol`, `op`, `arb`, `base`, `avax`, `bnb`, `bsc`, `gno`, `xdai`, `celo`, `ftm`, `linea`, `scroll`, `zksync`, `blast`. Those endpoints are shared and rate-limited, so setting your own is recommended.
+A plain comma-separated list of URLs is also accepted, but only when every token entry uses the same single chain ID.
+
+Every endpoint must report the chain ID it is listed under. The node checks this before it verifies a tip and rejects the tip if the RPC is on another chain. With several URLs for one chain ID the node cannot tell which one answered, so list only endpoints for that chain.
+
+Chain IDs with a built-in public RPC: 1 (Ethereum), 10 (OP Mainnet), 56 (BNB Smart Chain), 100 (Gnosis), 137 (Polygon), 250 (Fantom), 324 (ZKsync Era), 8453 (Base), 42161 (Arbitrum One), 42220 (Celo), 43114 (Avalanche), 59144 (Linea), 81457 (Blast), 534352 (Scroll). Those endpoints are shared and rate-limited, so setting your own is recommended.
 
 Settings are checked when they are saved. The edit is rejected when:
 
 - `tipping/v1/tokens` is not in `publicOptions`, or the list is malformed;
 - a token has a fee and `tipping/v1/feeRecipient` is missing, is not an address, or is not in `publicOptions`;
 - `tipping/v1/feeRecipient` is set but no token has a fee;
-- `rpcUrls` is in `publicOptions` (RPC URLs often embed an API key), is malformed, or is missing for a chain with no built-in RPC.
+- `rpcUrls` is in `publicOptions` (RPC URLs often embed an API key), is malformed, has a key that is not a chain ID or that no token uses, is a plain list while the tokens span several chain IDs, or is missing for a chain ID with no built-in RPC.
 
 ### Moderation
 
@@ -326,7 +364,7 @@ A tip reply is an ordinary comment. Pending approval, removal and the mod log ap
 
 ### State
 
-The challenge remembers which transactions have backed a tip, per community, in the node's pkc-js storage (`tipping_challenge_v1_used_tx`). Deleting that storage lets old transactions be claimed again.
+The challenge remembers which transactions have backed a tip, per community and chain ID, in the node's pkc-js storage (`tipping_challenge_v1_used_tx`). Deleting that storage lets old transactions be claimed again.
 
 ## Development
 

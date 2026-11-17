@@ -1,4 +1,4 @@
-import { getAddress, type Address } from "viem";
+import { getAddress, type Address, type PublicClient } from "viem";
 import type {
   ChallengeFileInput,
   ChallengeInput,
@@ -21,12 +21,13 @@ import {
   type VerifiedTip
 } from "./contract.js";
 import {
-  getChainClient,
-  getChainFromTicker,
+  ChainIdMismatchError,
+  getChainFromId,
+  getConfirmedChainClient,
   getRpcUrlsForChain,
-  knownChainTickers,
   parseRpcUrls,
   readTransaction,
+  rpcUrlsRequiredMessage,
   type MinedTransaction,
   type TokenTransfer
 } from "./chain.js";
@@ -43,9 +44,9 @@ const optionInputs: NonNullable<ChallengeFileInput["optionInputs"]> = [
     label: "Tokens",
     default: "",
     description:
-      "JSON array of the tokens accepted as tips. Each entry has chainTicker, type (native, erc20 or erc721), address (not for native), and optionally minAmount and fee. Amounts are strings in the token's smallest unit. Must be listed in publicOptions so clients can offer the right tokens. The key names the tipping/v1 contract rather than this package.",
+      "JSON array of the tokens accepted as tips. Each entry has chainId (the numeric chain ID, e.g. 1 for Ethereum mainnet), type (native, erc20 or erc721), address (not for native), and optionally minAmount and fee. Amounts are strings in the token's smallest unit. Must be listed in publicOptions so clients can offer the right tokens. The key names the tipping/v1 contract rather than this package.",
     placeholder:
-      '[{"chainTicker":"eth","type":"native"},{"chainTicker":"eth","type":"erc20","address":"0x...","minAmount":"1000000","fee":{"percent":"2.5"}}]',
+      '[{"chainId":1,"type":"native"},{"chainId":1,"type":"erc20","address":"0x...","minAmount":"1000000","fee":{"percent":"2.5"}}]',
     required: true
   },
   {
@@ -63,8 +64,8 @@ const optionInputs: NonNullable<ChallengeFileInput["optionInputs"]> = [
     label: "RPC URLs",
     default: "",
     description:
-      'Comma-separated JSON-RPC URLs, or a JSON object mapping a chainTicker to such a list when the tokens span several chains, e.g. {"eth":"https://a,https://b","base":"https://c"}. Optional for a chainTicker with a built-in RPC, required otherwise. Recommended even when optional: the built-in RPC is shared and rate-limited.',
-    placeholder: "https://eth.llamarpc.com,https://rpc.ankr.com/eth"
+      'JSON object mapping a chain ID to comma-separated JSON-RPC URLs, e.g. {"1":"https://a,https://b","8453":"https://c"}. A plain comma-separated list is also accepted when every token is on the same chain ID. Optional for a chain ID with a built-in RPC, required otherwise. Recommended even when optional: the built-in RPC is shared and rate-limited. Each endpoint must report the chain ID it is listed under.',
+    placeholder: '{"1":"https://eth.llamarpc.com,https://rpc.ankr.com/eth"}'
   }
 ];
 
@@ -135,8 +136,8 @@ const validateChallengeSettings = ({ challengeSettings }: { challengeSettings: C
     );
   }
 
-  const { all, byChain } = parseRpcUrls(rpcUrls);
-  for (const url of [...all, ...Object.values(byChain).flat()]) {
+  const { all, byChainId } = parseRpcUrls(rpcUrls);
+  for (const url of [...all, ...[...byChainId.values()].flat()]) {
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(url);
@@ -148,24 +149,21 @@ const validateChallengeSettings = ({ challengeSettings }: { challengeSettings: C
     }
   }
 
-  const chainTickers = [...new Set(tokens.map((token) => token.chainTicker))];
-  if (all.length > 0 && chainTickers.length > 1) {
+  const chainIds = [...new Set(tokens.map((token) => token.chainId))];
+  if (all.length > 0 && chainIds.length > 1) {
     throw new Error(
-      `option rpcUrls is a plain list of URLs but the tokens span ${chainTickers.length} chains (${chainTickers.join(", ")}). ` +
-        `Use a JSON object mapping each chainTicker to its URLs`
+      `option rpcUrls is a plain list of URLs but the tokens span ${chainIds.length} chain IDs (${chainIds.join(", ")}). ` +
+        `Use a JSON object mapping each chain ID to its URLs`
     );
   }
-  for (const chainTicker of Object.keys(byChain)) {
-    if (!chainTickers.includes(chainTicker)) {
-      throw new Error(`option rpcUrls names chainTicker "${chainTicker}", which no token uses`);
+  for (const chainId of byChainId.keys()) {
+    if (!chainIds.includes(chainId)) {
+      throw new Error(`option rpcUrls names chain ID ${chainId}, which no token uses`);
     }
   }
-  for (const chainTicker of chainTickers) {
-    if (getRpcUrlsForChain(rpcUrls, chainTicker).length === 0 && !getChainFromTicker(chainTicker)) {
-      throw new Error(
-        `option rpcUrls is required for chainTicker "${chainTicker}": it has no built-in RPC. ` +
-          `Tickers with a built-in RPC are: ${knownChainTickers.join(", ")}.`
-      );
+  for (const chainId of chainIds) {
+    if (getRpcUrlsForChain(rpcUrls, chainId).length === 0 && !getChainFromId(chainId)) {
+      throw new Error(rpcUrlsRequiredMessage(chainId));
     }
   }
 };
@@ -213,13 +211,13 @@ const isUsedTxRecord = (value: unknown): value is UsedTxRecord =>
 // Binds every hash to the publication claiming it, or names the hash that another publication holds.
 const claimTransactions = ({
   community,
-  chainTicker,
+  chainId,
   hashes,
   publicationSignature,
   nowSeconds
 }: {
   community: LocalCommunity;
-  chainTicker: string;
+  chainId: number;
   hashes: string[];
   publicationSignature: string;
   nowSeconds: number;
@@ -232,8 +230,9 @@ const claimTransactions = ({
 
     // The storage is shared by every community on the node, so the key carries the community. publicKey
     // rather than address: the address can be a name, and a name can change.
+    // The chain ID is part of the key: a hash on one chain says nothing about the same hash on another.
     const communityId = community.publicKey ?? community.address;
-    const keyOf = (hash: string): string => `${communityId}\n${chainTicker}\n${hash}`;
+    const keyOf = (hash: string): string => `${communityId}\n${chainId}\n${hash}`;
 
     for (const hash of hashes) {
       const record = await storage.getItem(keyOf(hash));
@@ -262,39 +261,81 @@ interface FoundTip {
   value: bigint;
 }
 
-// The tip is the first thing in the transaction that moves a whitelisted token from the tipper's wallet
-// to the recipient's wallet: the native coin sent by the transaction itself if that is whitelisted, else
-// the first matching Transfer event in log order. The claim does not name a token, so this order is the
-// rule, and it is part of the tipping/v1 contract.
+const includesAddress = (addresses: readonly string[], address: string | null | undefined): boolean =>
+  addresses.some((candidate) => sameAddress(candidate, address));
+
+// The tip is the first thing in the transaction that moves a whitelisted token from one of the tipper's
+// proven wallets to one of the recipient's proven wallets: the native coin sent by the transaction itself
+// if that is whitelisted, else the first matching Transfer event in log order. The claim does not name a
+// token, so this order is the rule, and it is part of the tipping/v1 contract.
 const findTip = ({
   tx,
   tokens,
-  from,
-  to
+  senders,
+  receivers
 }: {
   tx: MinedTransaction;
   tokens: readonly TipToken[];
-  from: Address;
-  to: Address;
-}): FoundTip | undefined => {
+  senders: readonly Address[];
+  receivers: readonly Address[];
+}): (FoundTip & { from: Address; to: Address }) | undefined => {
   const native = tokens.find((token) => token.type === "native");
-  if (native && tx.value !== undefined && tx.value > 0n && sameAddress(tx.from, from) && sameAddress(tx.to, to)) {
-    return { token: native, transfer: undefined, value: tx.value };
+  if (
+    native &&
+    tx.value !== undefined &&
+    tx.value > 0n &&
+    tx.to !== null &&
+    includesAddress(senders, tx.from) &&
+    includesAddress(receivers, tx.to)
+  ) {
+    return { token: native, transfer: undefined, value: tx.value, from: tx.from, to: tx.to };
   }
 
   for (const transfer of tx.transfers) {
-    if (!sameAddress(transfer.from, from) || !sameAddress(transfer.to, to)) continue;
+    if (!includesAddress(senders, transfer.from) || !includesAddress(receivers, transfer.to)) continue;
     const token = tokens.find((candidate) => candidate.type === transfer.kind && sameAddress(candidate.address, transfer.token));
-    if (token) return { token, transfer, value: transfer.value };
+    if (token) return { token, transfer, value: transfer.value, from: transfer.from, to: transfer.to };
   }
 
   return undefined;
 };
 
-const walletsOf = (author: unknown): Record<string, AuthorWallet> | undefined => {
+interface ProvenWallets {
+  addresses: Address[];
+  // one line per entry that did not verify, for the error shown when nothing verified
+  failures: string[];
+}
+
+// Every validly proven entry of author.wallets counts, whatever key it sits under. The key is a label
+// the author chose (a ticker), and tipping/v1 does not use tickers: a proof shows control of an address,
+// and that address is the same on every EVM chain. An entry that fails verification is ignored, since one
+// stale entry must not stop an author with a good one.
+const collectProvenWallets = async ({
+  author,
+  authorKeyAddress,
+  nowSeconds
+}: {
+  author: unknown;
+  authorKeyAddress: string;
+  nowSeconds: number;
+}): Promise<ProvenWallets> => {
   const wallets = (author as { wallets?: unknown } | undefined)?.wallets;
-  return typeof wallets === "object" && wallets !== null ? (wallets as Record<string, AuthorWallet>) : undefined;
+  const proven: ProvenWallets = { addresses: [], failures: [] };
+  if (typeof wallets !== "object" || wallets === null || Array.isArray(wallets)) return proven;
+
+  for (const [key, wallet] of Object.entries(wallets as Record<string, AuthorWallet>)) {
+    const result = await verifyWalletProof({ wallet, authorKeyAddress, nowSeconds });
+    if ("error" in result) {
+      proven.failures.push(`"${key}": ${result.error}`);
+    } else if (!includesAddress(proven.addresses, result.address)) {
+      proven.addresses.push(result.address);
+    }
+  }
+  return proven;
 };
+
+const describeNoWallets = (proven: ProvenWallets): string =>
+  proven.failures.length > 0 ? `No entry verified (${proven.failures.join("; ")}).` : "There are no entries.";
 
 const describeRpcError = (e: unknown): string => (e instanceof Error ? e.message.split("\n")[0] : String(e)) ?? "";
 
@@ -329,7 +370,7 @@ const getChallenge = async ({
     claim = parseTipClaim(rawClaim);
     if (authorClaim !== undefined && topLevelClaim !== undefined) {
       const other = parseTipClaim(topLevelClaim);
-      if (other.chainTicker !== claim.chainTicker || other.txHash !== claim.txHash || other.feeTxHash !== claim.feeTxHash) {
+      if (other.chainId !== claim.chainId || other.txHash !== claim.txHash || other.feeTxHash !== claim.feeTxHash) {
         throw new Error("author.tip and the top-level tip are both present and differ. Publish the claim once");
       }
     }
@@ -341,9 +382,9 @@ const getChallenge = async ({
     return fail("A tip must be a reply to the comment being tipped. A post cannot carry a tip.");
   }
 
-  const tokens = settings.tokens.filter((token) => token.chainTicker === claim.chainTicker);
+  const tokens = settings.tokens.filter((token) => token.chainId === claim.chainId);
   if (tokens.length === 0) {
-    return fail(`This community does not accept tips on chain "${claim.chainTicker}".`);
+    return fail(`This community does not accept tips on chain ID ${claim.chainId}.`);
   }
 
   const parent = community._dbHandler.queryComment(comment.parentCid);
@@ -366,28 +407,36 @@ const getChallenge = async ({
 
   const nowSeconds = Math.floor(Date.now() / 1000);
 
-  const tipperWallet = await verifyWalletProof({
-    wallet: walletsOf(comment.author)?.[claim.chainTicker],
-    authorKeyAddress: tipperKeyAddress,
-    nowSeconds
-  });
-  if ("error" in tipperWallet) {
-    return fail(`Your author.wallets["${claim.chainTicker}"] entry is not valid: ${tipperWallet.error}.`);
+  const tipperWallets = await collectProvenWallets({ author: comment.author, authorKeyAddress: tipperKeyAddress, nowSeconds });
+  if (tipperWallets.addresses.length === 0) {
+    return fail(`You have no valid author.wallets entry to tip from. ${describeNoWallets(tipperWallets)}`);
   }
 
-  const recipientWallet = await verifyWalletProof({
-    wallet: walletsOf(parent.author)?.[claim.chainTicker],
+  const recipientWallets = await collectProvenWallets({
+    author: parent.author,
     authorKeyAddress: recipientKeyAddress,
     nowSeconds
   });
-  if ("error" in recipientWallet) {
+  if (recipientWallets.addresses.length === 0) {
     return fail(
-      `The author being tipped has no valid author.wallets["${claim.chainTicker}"] entry on that comment: ${recipientWallet.error}.`
+      `The author being tipped has no valid author.wallets entry on that comment. ${describeNoWallets(recipientWallets)}`
     );
   }
 
-  if (sameAddress(tipperWallet.address, recipientWallet.address)) {
+  // A wallet the tipper has proven as their own is not somebody else's wallet, whoever else lists it.
+  const receivers = recipientWallets.addresses.filter((address) => !includesAddress(tipperWallets.addresses, address));
+  if (receivers.length === 0) {
     return fail("You cannot tip your own wallet.");
+  }
+  const senders = tipperWallets.addresses;
+
+  // Nothing is read from an RPC until it has reported the chain ID the claim names.
+  let client: PublicClient;
+  try {
+    client = await getConfirmedChainClient(settings.rpcUrls, claim.chainId);
+  } catch (e) {
+    if (e instanceof ChainIdMismatchError) return fail(e.message);
+    return fail(`Could not confirm the RPC for chain ID ${claim.chainId}: ${describeRpcError(e)}`);
   }
 
   const nativeAccepted = tokens.some((token) => token.type === "native");
@@ -399,7 +448,6 @@ const getChallenge = async ({
   ): Promise<{ tx: MinedTransaction } | { error: string }> => {
     let tx: MinedTransaction | undefined;
     try {
-      const client = getChainClient(settings.rpcUrls, claim.chainTicker);
       tx = await readTransaction({ client, hash, withValue: nativeAccepted });
     } catch (e) {
       return { error: `Could not read the ${label} transaction from the chain: ${describeRpcError(e)}` };
@@ -420,10 +468,10 @@ const getChallenge = async ({
   if ("error" in tipTxResult) return fail(tipTxResult.error);
   const tipTx = tipTxResult.tx;
 
-  const tip = findTip({ tx: tipTx, tokens, from: tipperWallet.address, to: recipientWallet.address });
+  const tip = findTip({ tx: tipTx, tokens, senders, receivers });
   if (!tip) {
     return fail(
-      "The tip transaction does not transfer an accepted token from your wallet to the wallet of the author being tipped."
+      "The tip transaction does not transfer an accepted token from one of your proven wallets to a proven wallet of the author being tipped."
     );
   }
 
@@ -432,11 +480,11 @@ const getChallenge = async ({
   }
 
   const verified: VerifiedTip = {
-    chainTicker: claim.chainTicker,
+    chainId: claim.chainId,
     txHash: claim.txHash,
     type: tip.token.type,
-    from: tipperWallet.address,
-    to: recipientWallet.address
+    from: tip.from,
+    to: tip.to
   };
   if (tip.transfer) verified.token = tip.transfer.token;
   if (tip.token.type === "erc721") verified.tokenId = tip.value.toString();
@@ -469,11 +517,7 @@ const getChallenge = async ({
           "This tip owes the community a fee in the native coin, which must be a separate transaction. Send it to the fee recipient and put its hash in tip.feeTxHash."
         );
       }
-      if (
-        feeTx.value !== undefined &&
-        sameAddress(feeTx.from, tipperWallet.address) &&
-        sameAddress(feeTx.to, feeRecipient)
-      ) {
+      if (feeTx.value !== undefined && includesAddress(senders, feeTx.from) && sameAddress(feeTx.to, feeRecipient)) {
         paid = feeTx.value;
       }
     } else {
@@ -484,7 +528,7 @@ const getChallenge = async ({
         (candidate) =>
           candidate.kind === "erc20" &&
           sameAddress(candidate.token, feeToken) &&
-          sameAddress(candidate.from, tipperWallet.address) &&
+          includesAddress(senders, candidate.from) &&
           sameAddress(candidate.to, feeRecipient) &&
           candidate.value >= requiredFee.amount &&
           !(sameTx && tip.transfer && candidate.logIndex === tip.transfer.logIndex)
@@ -495,7 +539,7 @@ const getChallenge = async ({
     if (paid === undefined || paid < requiredFee.amount) {
       const feeTokenText = requiredFee.feeToken === undefined ? "the native coin" : `token ${requiredFee.feeToken}`;
       return fail(
-        `This tip owes the community a fee of ${requiredFee.amount} in ${feeTokenText}, sent from your wallet to ${feeRecipient}. ` +
+        `This tip owes the community a fee of ${requiredFee.amount} in ${feeTokenText}, sent from one of your proven wallets to ${feeRecipient}. ` +
           (sameTx
             ? "No such transfer is in the tip transaction. Send it and put its hash in tip.feeTxHash."
             : "The fee transaction does not contain it.")
@@ -509,7 +553,7 @@ const getChallenge = async ({
 
   const claimResult = await claimTransactions({
     community,
-    chainTicker: claim.chainTicker,
+    chainId: claim.chainId,
     hashes: usedHashes,
     publicationSignature: comment.signature.signature,
     nowSeconds

@@ -8,8 +8,8 @@ import { buildSettings } from "./helpers.js";
 const USDC = getAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001");
 const FEE_RECIPIENT = "0x1111111111111111111111111111111111111111";
 
-const native: TipToken = { chainTicker: "eth", type: "native" };
-const usdcWithFee: TipToken = { chainTicker: "eth", type: "erc20", address: USDC, fee: { percent: "2.5" } };
+const native: TipToken = { chainId: 1, type: "native" };
+const usdcWithFee: TipToken = { chainId: 1, type: "erc20", address: USDC, fee: { percent: "2.5" } };
 
 const validate = (params: Parameters<typeof buildSettings>[0]) => () =>
   validateChallengeSettings({ challengeSettings: buildSettings(params) });
@@ -92,33 +92,42 @@ describe("validateChallengeSettings", () => {
 
   it("rejects a plain rpcUrls list when the tokens span several chains", () => {
     expect(
-      validate({ tokens: [native, { chainTicker: "base", type: "native" }], rpcUrls: "https://a.example" })
-    ).toThrow(/tokens span 2 chains/);
+      validate({ tokens: [native, { chainId: 8453, type: "native" }], rpcUrls: "https://a.example" })
+    ).toThrow(/tokens span 2 chain IDs \(1, 8453\)/);
   });
 
-  it("accepts rpcUrls as a JSON object per chain", () => {
+  it("accepts rpcUrls as a JSON object keyed by chain ID", () => {
     expect(
       validate({
-        tokens: [native, { chainTicker: "base", type: "native" }],
-        rpcUrls: JSON.stringify({ eth: "https://a.example,https://b.example", base: "https://c.example" })
+        tokens: [native, { chainId: 8453, type: "native" }],
+        rpcUrls: JSON.stringify({ "1": "https://a.example,https://b.example", "8453": "https://c.example" })
       })
     ).not.toThrow();
   });
 
-  it("rejects malformed rpcUrls JSON and a chain no token uses", () => {
+  it("rejects malformed rpcUrls JSON and a chain ID no token uses", () => {
     expect(validate({ tokens: [native], rpcUrls: "{" })).toThrow(/not valid JSON/);
-    expect(validate({ tokens: [native], rpcUrls: JSON.stringify({ eth: ["https://a.example"] }) })).toThrow(/must be a string/);
-    expect(validate({ tokens: [native], rpcUrls: JSON.stringify({ base: "https://c.example" }) })).toThrow(/which no token uses/);
+    expect(validate({ tokens: [native], rpcUrls: JSON.stringify({ "1": ["https://a.example"] }) })).toThrow(/must be a string/);
+    expect(validate({ tokens: [native], rpcUrls: JSON.stringify({ "8453": "https://c.example" }) })).toThrow(/which no token uses/);
   });
 
   it("requires rpcUrls for a chain with no built-in RPC", () => {
-    const custom: TipToken = { chainTicker: "mychain", type: "native" };
-    expect(validate({ tokens: [custom] })).toThrow(/rpcUrls is required for chainTicker "mychain"/);
+    const custom: TipToken = { chainId: 999_999, type: "native" };
+    expect(validate({ tokens: [custom] })).toThrow(/rpcUrls is required for chain ID 999999/);
     expect(validate({ tokens: [custom], rpcUrls: "https://rpc.mychain.example" })).not.toThrow();
+    expect(validate({ tokens: [custom], rpcUrls: JSON.stringify({ "999999": "https://rpc.mychain.example" }) })).not.toThrow();
+    // an object that covers another chain leaves this one without an RPC
+    expect(
+      validate({ tokens: [custom, native], rpcUrls: JSON.stringify({ "1": "https://a.example" }) })
+    ).toThrow(/rpcUrls is required for chain ID 999999/);
   });
 
-  it("does not treat an inherited property name as a known chain", () => {
-    expect(validate({ tokens: [{ chainTicker: "constructor", type: "native" }] })).toThrow(/rpcUrls is required/);
+  it("rejects an rpcUrls key that is not a chain ID", () => {
+    for (const key of ["eth", "0", "01", "1.5", "-1", "constructor"]) {
+      expect(validate({ tokens: [native], rpcUrls: JSON.stringify({ [key]: "https://a.example" }) })).toThrow(
+        /is not a chain ID/
+      );
+    }
   });
 });
 

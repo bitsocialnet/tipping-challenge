@@ -45,15 +45,15 @@ describe("parseTipTokens", () => {
   it("accepts the documented example", () => {
     const parsed = parseTipTokens(
       tokens([
-        { chainTicker: "eth", type: "native", minAmount: "1000000000000000", fee: { percent: "2" } },
-        { chainTicker: "eth", type: "erc20", address: USDC, minAmount: "1000000", fee: { percent: "2.5" } },
-        { chainTicker: "eth", type: "erc20", address: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0002", fee: { amount: "500000000000000000" } },
-        { chainTicker: "eth", type: "erc721", address: NFT, fee: { amount: "1000000", token: USDC } },
-        { chainTicker: "eth", type: "erc721", address: "0x3333333333333333333333333333333333333333" }
+        { chainId: 1, type: "native", minAmount: "1000000000000000", fee: { percent: "2" } },
+        { chainId: 1, type: "erc20", address: USDC, minAmount: "1000000", fee: { percent: "2.5" } },
+        { chainId: 1, type: "erc20", address: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0002", fee: { amount: "500000000000000000" } },
+        { chainId: 1, type: "erc721", address: NFT, fee: { amount: "1000000", token: USDC } },
+        { chainId: 1, type: "erc721", address: "0x3333333333333333333333333333333333333333" }
       ])
     );
     expect(parsed).toHaveLength(5);
-    expect(parsed[3]).toEqual({ chainTicker: "eth", type: "erc721", address: NFT, fee: { amount: "1000000", token: USDC } });
+    expect(parsed[3]).toEqual({ chainId: 1, type: "erc721", address: NFT, fee: { amount: "1000000", token: USDC } });
   });
 
   it.each<[string, string | undefined, RegExp]>([
@@ -62,51 +62,57 @@ describe("parseTipTokens", () => {
     ["not an array", "{}", /must be a JSON array/],
     ["empty list", "[]", /at least one token/],
     ["entry not an object", tokens(["eth"]), /\[0\] must be an object/],
-    ["unknown key", tokens([{ chainTicker: "eth", type: "native", feee: {} }]), /unknown key "feee"/],
-    ["missing chainTicker", tokens([{ type: "native" }]), /chainTicker must be a non-empty string/],
-    ["unknown type", tokens([{ chainTicker: "eth", type: "erc1155", address: NFT }]), /type must be one of/],
-    ["native with address", tokens([{ chainTicker: "eth", type: "native", address: USDC }]), /left out for the native coin/],
-    ["erc20 without address", tokens([{ chainTicker: "eth", type: "erc20" }]), /0x address/],
-    ["erc20 with a name as address", tokens([{ chainTicker: "eth", type: "erc20", address: "usdc.eth" }]), /0x address/],
+    ["unknown key", tokens([{ chainId: 1, type: "native", feee: {} }]), /unknown key "feee"/],
+    ["missing chainId", tokens([{ type: "native" }]), /chainId must be a positive integer/],
+    ["chainTicker in place of chainId", tokens([{ chainTicker: "eth", type: "native" }]), /uses chainTicker.*numeric chainId only/],
+    ["chainTicker next to chainId", tokens([{ chainId: 1, chainTicker: "eth", type: "native" }]), /uses chainTicker/],
+    ["chainId as a string", tokens([{ chainId: "1", type: "native" }]), /chainId must be a positive integer.*got "1"/],
+    ["chainId zero", tokens([{ chainId: 0, type: "native" }]), /chainId must be a positive integer/],
+    ["chainId negative", tokens([{ chainId: -1, type: "native" }]), /chainId must be a positive integer/],
+    ["chainId fractional", tokens([{ chainId: 1.5, type: "native" }]), /chainId must be a positive integer/],
+    ["unknown type", tokens([{ chainId: 1, type: "erc1155", address: NFT }]), /type must be one of/],
+    ["native with address", tokens([{ chainId: 1, type: "native", address: USDC }]), /left out for the native coin/],
+    ["erc20 without address", tokens([{ chainId: 1, type: "erc20" }]), /0x address/],
+    ["erc20 with a name as address", tokens([{ chainId: 1, type: "erc20", address: "usdc.eth" }]), /0x address/],
     [
       "erc20 with a mistyped mixed-case address",
-      tokens([{ chainTicker: "eth", type: "erc20", address: USDC.slice(0, -1) + (USDC.endsWith("1") ? "2" : "1") }]),
+      tokens([{ chainId: 1, type: "erc20", address: USDC.slice(0, -1) + (USDC.endsWith("1") ? "2" : "1") }]),
       /valid checksum/
     ],
     [
       "flat erc721 fee with a mistyped mixed-case token",
-      tokens([{ chainTicker: "eth", type: "erc721", address: NFT, fee: { amount: "1", token: "0xAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }]),
+      tokens([{ chainId: 1, type: "erc721", address: NFT, fee: { amount: "1", token: "0xAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }]),
       /valid checksum/
     ],
-    ["minAmount as number", tokens([{ chainTicker: "eth", type: "native", minAmount: 5 }]), /minAmount must be a string/],
-    ["minAmount zero", tokens([{ chainTicker: "eth", type: "native", minAmount: "0" }]), /greater than 0/],
-    ["minAmount decimal", tokens([{ chainTicker: "eth", type: "native", minAmount: "1.5" }]), /unsigned integer/],
-    ["minAmount on erc721", tokens([{ chainTicker: "eth", type: "erc721", address: NFT, minAmount: "1" }]), /not possible for an erc721/],
-    ["fee not an object", tokens([{ chainTicker: "eth", type: "native", fee: "2" }]), /fee must be an object/],
-    ["fee with both kinds", tokens([{ chainTicker: "eth", type: "native", fee: { percent: "1", amount: "1" } }]), /exactly one of/],
-    ["fee with neither kind", tokens([{ chainTicker: "eth", type: "native", fee: {} }]), /exactly one of/],
-    ["fee with unknown key", tokens([{ chainTicker: "eth", type: "native", fee: { bps: "1" } }]), /unknown key "bps"/],
-    ["percent zero", tokens([{ chainTicker: "eth", type: "native", fee: { percent: "0" } }]), /greater than 0/],
-    ["percent above 100", tokens([{ chainTicker: "eth", type: "native", fee: { percent: "100.0001" } }]), /must not exceed 100/],
-    ["percent with too many decimals", tokens([{ chainTicker: "eth", type: "native", fee: { percent: "1.00001" } }]), /at most 4 decimal places/],
-    ["percent on erc721", tokens([{ chainTicker: "eth", type: "erc721", address: NFT, fee: { percent: "1" } }]), /cannot be split/],
-    ["percent with token", tokens([{ chainTicker: "eth", type: "erc20", address: USDC, fee: { percent: "1", token: USDC } }]), /only for a flat erc721 fee/],
-    ["flat erc721 fee without token", tokens([{ chainTicker: "eth", type: "erc721", address: NFT, fee: { amount: "1" } }]), /fee.token is required/],
-    ["flat erc20 fee with token", tokens([{ chainTicker: "eth", type: "erc20", address: USDC, fee: { amount: "1", token: USDC } }]), /only for an erc721 token/],
-    ["flat fee zero", tokens([{ chainTicker: "eth", type: "native", fee: { amount: "0" } }]), /greater than 0/],
+    ["minAmount as number", tokens([{ chainId: 1, type: "native", minAmount: 5 }]), /minAmount must be a string/],
+    ["minAmount zero", tokens([{ chainId: 1, type: "native", minAmount: "0" }]), /greater than 0/],
+    ["minAmount decimal", tokens([{ chainId: 1, type: "native", minAmount: "1.5" }]), /unsigned integer/],
+    ["minAmount on erc721", tokens([{ chainId: 1, type: "erc721", address: NFT, minAmount: "1" }]), /not possible for an erc721/],
+    ["fee not an object", tokens([{ chainId: 1, type: "native", fee: "2" }]), /fee must be an object/],
+    ["fee with both kinds", tokens([{ chainId: 1, type: "native", fee: { percent: "1", amount: "1" } }]), /exactly one of/],
+    ["fee with neither kind", tokens([{ chainId: 1, type: "native", fee: {} }]), /exactly one of/],
+    ["fee with unknown key", tokens([{ chainId: 1, type: "native", fee: { bps: "1" } }]), /unknown key "bps"/],
+    ["percent zero", tokens([{ chainId: 1, type: "native", fee: { percent: "0" } }]), /greater than 0/],
+    ["percent above 100", tokens([{ chainId: 1, type: "native", fee: { percent: "100.0001" } }]), /must not exceed 100/],
+    ["percent with too many decimals", tokens([{ chainId: 1, type: "native", fee: { percent: "1.00001" } }]), /at most 4 decimal places/],
+    ["percent on erc721", tokens([{ chainId: 1, type: "erc721", address: NFT, fee: { percent: "1" } }]), /cannot be split/],
+    ["percent with token", tokens([{ chainId: 1, type: "erc20", address: USDC, fee: { percent: "1", token: USDC } }]), /only for a flat erc721 fee/],
+    ["flat erc721 fee without token", tokens([{ chainId: 1, type: "erc721", address: NFT, fee: { amount: "1" } }]), /fee.token is required/],
+    ["flat erc20 fee with token", tokens([{ chainId: 1, type: "erc20", address: USDC, fee: { amount: "1", token: USDC } }]), /only for an erc721 token/],
+    ["flat fee zero", tokens([{ chainId: 1, type: "native", fee: { amount: "0" } }]), /greater than 0/],
     [
       "duplicate token, different casing",
       tokens([
-        { chainTicker: "eth", type: "erc20", address: USDC },
-        { chainTicker: "eth", type: "erc20", address: USDC.toLowerCase() }
+        { chainId: 1, type: "erc20", address: USDC },
+        { chainId: 1, type: "erc20", address: USDC.toLowerCase() }
       ]),
       /same token as entry 0/
     ],
     [
       "two native entries on one chain",
       tokens([
-        { chainTicker: "eth", type: "native" },
-        { chainTicker: "eth", type: "native", minAmount: "1" }
+        { chainId: 1, type: "native" },
+        { chainId: 1, type: "native", minAmount: "1" }
       ]),
       /same token as entry 0/
     ]
@@ -116,19 +122,19 @@ describe("parseTipTokens", () => {
 
   it("rejects more than the maximum number of entries", () => {
     const many = Array.from({ length: 65 }, (_, i) => ({
-      chainTicker: "eth",
+      chainId: 1,
       type: "erc20",
       address: `0x${(i + 1).toString(16).padStart(40, "0")}`
     }));
     expect(() => parseTipTokens(tokens(many))).toThrow(/maximum is 64/);
   });
 
-  it("allows the same contract on two chains", () => {
+  it("allows the same contract on two chain IDs", () => {
     expect(
       parseTipTokens(
         tokens([
-          { chainTicker: "eth", type: "erc20", address: USDC },
-          { chainTicker: "base", type: "erc20", address: USDC }
+          { chainId: 1, type: "erc20", address: USDC },
+          { chainId: 8453, type: "erc20", address: USDC }
         ])
       )
     ).toHaveLength(2);
@@ -136,7 +142,7 @@ describe("parseTipTokens", () => {
 });
 
 describe("getRequiredFee", () => {
-  const erc20 = (fee: TipToken["fee"]): TipToken => ({ chainTicker: "eth", type: "erc20", address: USDC, ...(fee ? { fee } : {}) });
+  const erc20 = (fee: TipToken["fee"]): TipToken => ({ chainId: 1, type: "erc20", address: USDC, ...(fee ? { fee } : {}) });
 
   it("owes nothing without a fee", () => {
     expect(getRequiredFee(erc20(undefined), 1000n)).toBeUndefined();
@@ -160,7 +166,7 @@ describe("getRequiredFee", () => {
   });
 
   it("pays a native fee in the native coin", () => {
-    expect(getRequiredFee({ chainTicker: "eth", type: "native", fee: { percent: "2" } }, 1000n)).toEqual({
+    expect(getRequiredFee({ chainId: 1, type: "native", fee: { percent: "2" } }, 1000n)).toEqual({
       amount: 20n,
       feeToken: undefined
     });
@@ -172,7 +178,7 @@ describe("getRequiredFee", () => {
 
   it("charges an erc721 flat fee in the named token", () => {
     expect(
-      getRequiredFee({ chainTicker: "eth", type: "erc721", address: NFT, fee: { amount: "1000000", token: USDC } }, 0n)
+      getRequiredFee({ chainId: 1, type: "erc721", address: NFT, fee: { amount: "1000000", token: USDC } }, 0n)
     ).toEqual({ amount: 1_000_000n, feeToken: USDC });
   });
 });
@@ -181,8 +187,8 @@ describe("parseTipClaim", () => {
   const hash = `0x${"ab".repeat(32)}`;
 
   it("accepts a claim and lowercases the hashes", () => {
-    expect(parseTipClaim({ chainTicker: "eth", txHash: hash.toUpperCase().replace("0X", "0x"), feeTxHash: hash })).toEqual({
-      chainTicker: "eth",
+    expect(parseTipClaim({ chainId: 1, txHash: hash.toUpperCase().replace("0X", "0x"), feeTxHash: hash })).toEqual({
+      chainId: 1,
       txHash: hash,
       feeTxHash: hash
     });
@@ -191,10 +197,13 @@ describe("parseTipClaim", () => {
   it.each<[string, unknown, RegExp]>([
     ["a string", "0xabc", /must be an object/],
     ["an array", [], /must be an object/],
-    ["a missing chainTicker", { txHash: hash }, /chainTicker/],
-    ["a short hash", { chainTicker: "eth", txHash: "0xabc" }, /tip.txHash/],
-    ["a bad fee hash", { chainTicker: "eth", txHash: hash, feeTxHash: "nope" }, /tip.feeTxHash/],
-    ["fields that imitate the verified result", { chainTicker: "eth", txHash: hash, amount: "1000000" }, /unknown key "amount"/]
+    ["a missing chainId", { txHash: hash }, /tip.chainId must be a positive integer/],
+    ["a chainTicker in place of a chainId", { chainTicker: "eth", txHash: hash }, /uses chainTicker/],
+    ["a chainId as a string", { chainId: "1", txHash: hash }, /tip.chainId must be a positive integer/],
+    ["a chainId of zero", { chainId: 0, txHash: hash }, /tip.chainId must be a positive integer/],
+    ["a short hash", { chainId: 1, txHash: "0xabc" }, /tip.txHash/],
+    ["a bad fee hash", { chainId: 1, txHash: hash, feeTxHash: "nope" }, /tip.feeTxHash/],
+    ["fields that imitate the verified result", { chainId: 1, txHash: hash, amount: "1000000" }, /unknown key "amount"/]
   ])("rejects %s", (_name, value, message) => {
     expect(() => parseTipClaim(value)).toThrow(message);
   });

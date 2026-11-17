@@ -33,6 +33,10 @@ export class FakeChain {
   txs = new Map<string, FakeTx>();
   requests: string[] = [];
   failWith: Error | undefined;
+  // What this RPC answers to eth_chainId. Left undefined, it reports whichever chain ID it was asked to
+  // serve, like a correctly configured endpoint. Set it to make the endpoint sit on the wrong chain.
+  reportChainId: number | undefined;
+  failChainId: Error | undefined;
   private nextBlock = 100;
   private blockOf = new Map<string, number>();
 
@@ -42,8 +46,15 @@ export class FakeChain {
     return hash;
   }
 
-  private request = async ({ method, params }: { method: string; params?: unknown }): Promise<unknown> => {
+  private request = async (
+    { method, params }: { method: string; params?: unknown },
+    servedChainId: number
+  ): Promise<unknown> => {
     this.requests.push(method);
+    if (method === "eth_chainId") {
+      if (this.failChainId) throw this.failChainId;
+      return numberToHex(this.reportChainId ?? servedChainId);
+    }
     if (this.failWith) throw this.failWith;
     const args = (params ?? []) as unknown[];
 
@@ -139,7 +150,9 @@ export class FakeChain {
   };
 
   install(): void {
-    _setTransportFactoryForTests(() => custom({ request: this.request }, { retryCount: 0 }));
+    _setTransportFactoryForTests(({ chainId }) =>
+      custom({ request: (args: { method: string; params?: unknown }) => this.request(args, chainId) }, { retryCount: 0 })
+    );
   }
 }
 
@@ -249,12 +262,12 @@ export const makeCommunity = (publicKey = "12D3KooWCommunityOne", storage = new 
 export const addParentComment = async (
   community: FakeCommunity,
   author: TestAuthor,
-  options: { wallets?: Record<string, unknown> | null; chainTicker?: string; cid?: string; timestamp?: number } = {}
+  options: { wallets?: Record<string, unknown> | null; walletKey?: string; cid?: string; timestamp?: number } = {}
 ): Promise<void> => {
   const wallets =
     options.wallets === null
       ? undefined
-      : (options.wallets ?? { [options.chainTicker ?? "eth"]: await signWallet(author) });
+      : (options.wallets ?? { [options.walletKey ?? "eth"]: await signWallet(author) });
   community.comments.set(options.cid ?? PARENT_CID, {
     cid: options.cid ?? PARENT_CID,
     timestamp: options.timestamp ?? PARENT_TIMESTAMP,
@@ -271,7 +284,8 @@ export const makeRequest = async (
     tip?: unknown;
     parentCid?: string | null;
     wallets?: Record<string, unknown> | null;
-    chainTicker?: string;
+    // The key the author's wallet entry sits under. tipping/v1 does not read it.
+    walletKey?: string;
     signature?: string;
     // Where the claim goes. "author" is what clients publish today.
     tipLocation?: "author" | "topLevel";
@@ -281,7 +295,7 @@ export const makeRequest = async (
   const wallets =
     options.wallets === null
       ? undefined
-      : (options.wallets ?? { [options.chainTicker ?? "eth"]: await signWallet(author) });
+      : (options.wallets ?? { [options.walletKey ?? "eth"]: await signWallet(author) });
   const comment: Record<string, unknown> = {
     content: "great post",
     timestamp: AFTER_PARENT,
