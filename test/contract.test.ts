@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { getAddress } from "viem";
+import { getAddress, recoverMessageAddress } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import {
   getKeyAddressFromPublicKey,
   getRequiredFee,
@@ -245,10 +246,13 @@ describe("verifyWalletProof", () => {
     });
   });
 
-  it("rejects a timestamp in the future, and accepts one at the present second", async () => {
+  it("accepts a timestamp up to 300 seconds ahead of the clock, and rejects one second more", async () => {
     const wallet = await signWallet(author, { timestamp: 2_000 });
-    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress, nowSeconds: 1_999 })).toEqual({
-      error: "wallet timestamp is in the future"
+    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress, nowSeconds: 1_699 })).toEqual({
+      error: "wallet timestamp is more than 300 seconds in the future"
+    });
+    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress, nowSeconds: 1_700 })).toEqual({
+      address: author.wallet.address
     });
     expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress, nowSeconds: 2_000 })).toEqual({
       address: author.wallet.address
@@ -262,10 +266,107 @@ describe("verifyWalletProof", () => {
     });
   });
 
-  it("rejects a malformed signature without throwing", async () => {
-    const wallet = { ...(await signWallet(author)), signature: { signature: "0x1234", type: "eip191" } };
-    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual({
+  it("rejects a signature that is not 65 bytes of hex", async () => {
+    const good = (await signWallet(author)).signature.signature;
+    for (const signature of ["0x1234", good.slice(0, -2), `${good}00`, good.slice(2), `0x${"zz".repeat(65)}`, 5]) {
+      const wallet = { ...(await signWallet(author)), signature: { signature, type: "eip191" } };
+      expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual({
+        error: expect.stringMatching(/must be 65 bytes/)
+      });
+    }
+  });
+});
+
+// The test vector of the "Author Wallet Proofs" BSIP draft.
+describe("verifyWalletProof, BSIP test vector", () => {
+  const SIGNATURE_PUBLIC_KEY = "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w";
+  const KEY_ADDRESS = "12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5";
+  const ADDRESS = "0x5050A4F4b3f9338C3472dcC01A87C76A144b3c9c";
+  const TIMESTAMP = 1_790_000_000;
+  const SIGNATURE =
+    "0x689cdb0da488b458f4deb758ea77c3d205b6d17d690e9ffab497bc44eb9536a25fbc48ce7c3e6cab651efe176f94d856ebbe8fcad920dfece8cb5f0cb355d8ac1c";
+  const CURVE_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
+  const entry = (overrides: { signature?: string; type?: string; address?: string } = {}) => ({
+    address: overrides.address ?? ADDRESS,
+    timestamp: TIMESTAMP,
+    signature: { signature: overrides.signature ?? SIGNATURE, type: overrides.type ?? "eip191" }
+  });
+
+  const verify = (wallet: ReturnType<typeof entry>, options: { keyAddress?: string; nowSeconds?: number } = {}) =>
+    verifyWalletProof({
+      wallet,
+      authorKeyAddress: options.keyAddress ?? KEY_ADDRESS,
+      nowSeconds: options.nowSeconds ?? TIMESTAMP
+    });
+
+  it("derives the vector's key address from its signature.publicKey", () => {
+    expect(getKeyAddressFromPublicKey(SIGNATURE_PUBLIC_KEY)).toBe(KEY_ADDRESS);
+  });
+
+  it("builds the vector's proof message", () => {
+    expect(getWalletMessageToSign(KEY_ADDRESS, TIMESTAMP)).toBe(
+      '{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5","timestamp":1790000000}'
+    );
+  });
+
+  it("is valid from the timestamp less the 300 second allowance onward", async () => {
+    expect(await verify(entry(), { nowSeconds: 1_789_999_700 })).toEqual({ address: ADDRESS });
+    expect(await verify(entry(), { nowSeconds: TIMESTAMP + 1_000_000 })).toEqual({ address: ADDRESS });
+  });
+
+  it("is not valid one second before that", async () => {
+    expect(await verify(entry(), { nowSeconds: 1_789_999_699 })).toEqual({
+      error: "wallet timestamp is more than 300 seconds in the future"
+    });
+  });
+
+  it("is not valid in a publication signed by another key", async () => {
+    expect(await verify(entry(), { keyAddress: makeAuthor(9).keyAddress })).toEqual({
       error: expect.stringMatching(/does not prove/)
     });
+  });
+
+  it("is not valid with another signature type or a name as the address", async () => {
+    expect(await verify(entry({ type: "erc1271" }))).toEqual({ error: expect.stringMatching(/signature type must be "eip191"/) });
+    expect(await verify(entry({ address: "example.eth" }))).toEqual({ error: expect.stringMatching(/literal 0x address/) });
+  });
+
+  it.each([
+    ["0x00", "00"],
+    ["0x01", "01"]
+  ])("is not valid with %s as the last byte in place of 0x1c", async (_name, v) => {
+    expect(await verify(entry({ signature: SIGNATURE.slice(0, -2) + v }))).toEqual({
+      error: expect.stringMatching(/v of 27 or 28/)
+    });
+  });
+
+  it("is not valid in its high-s form, although that form recovers the same address", async () => {
+    const r = SIGNATURE.slice(2, 66);
+    const s = BigInt(`0x${SIGNATURE.slice(66, 130)}`);
+    const highS = (CURVE_ORDER - s).toString(16).padStart(64, "0");
+    const twin = `0x${r}${highS}1b` as `0x${string}`;
+
+    // The twin is a real signature of the same message by the same wallet. Only the encoding rule
+    // rejects it, which is why the rule has to be checked before recovery.
+    const recovered = await recoverMessageAddress({ message: getWalletMessageToSign(KEY_ADDRESS, TIMESTAMP), signature: twin });
+    expect(recovered).toBe(ADDRESS);
+
+    expect(await verify(entry({ signature: twin }))).toEqual({ error: "wallet signature must use the low form of s" });
+  });
+
+  it("is not valid against a message built with authorAddress or another separator", async () => {
+    // Same wallet, same key, same timestamp: only the signed string differs.
+    const wallet = privateKeyToAccount(`0x${"02".repeat(32)}`);
+    expect(wallet.address).toBe(ADDRESS);
+    for (const message of [
+      `{"domainSeparator":"bitsocial-author-wallet","authorAddress":"${KEY_ADDRESS}","timestamp":${TIMESTAMP}}`,
+      `{"domainSeparator":"pkc-author-wallet","authorPublicKey":"${KEY_ADDRESS}","timestamp":${TIMESTAMP}}`
+    ]) {
+      const signature = await wallet.signMessage({ message });
+      expect(await verify(entry({ signature }))).toEqual({ error: expect.stringMatching(/does not prove/) });
+    }
+    // and signing the right string with that key reproduces the vector's signature exactly
+    expect(await wallet.signMessage({ message: getWalletMessageToSign(KEY_ADDRESS, TIMESTAMP) })).toBe(SIGNATURE);
   });
 });

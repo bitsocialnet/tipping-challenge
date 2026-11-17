@@ -167,12 +167,15 @@ It lives in the comment update, not in the comment, so a community that later st
 
 A tip is only meaningful if both wallets really belong to the two authors. pkc-js checks only the shape of `author.wallets`, so this challenge verifies each proof itself.
 
-An entry is `{ address, timestamp, signature: { signature, type } }`. It is valid when:
+The rules follow the [Author Wallet Proofs BSIP draft](https://github.com/bitsocialnet/BSIPs/issues/26). An entry is `{ address, timestamp, signature: { signature, type } }`. It is valid when:
 
-- `address` is a literal `0x` address, not a name.
+- `address` is a literal `0x` address (40 hex digits, any letter case), not a name.
 - `signature.type` is `eip191`.
-- `timestamp` is an integer and is not in the future.
-- `signature.signature` is the EIP-191 signature, by `address`, of exactly this string:
+- `timestamp` is an integer and is not more than 300 seconds later than the verifier's clock. The allowance is fixed.
+- `signature.signature` is 65 bytes, `r || s || v`, written as `0x` followed by 130 hex digits, where:
+  - `v`, the last byte, is `0x1b` or `0x1c` (27 or 28). The `0`/`1` form is rejected. A client whose signer returns `0` or `1` adds 27 before storing the signature.
+  - `s` is in the lower half of the curve order: `s <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0`. The high-`s` form of the same signature recovers the same address and is rejected anyway, so every proof has one accepted encoding.
+- the address recovered from that signature, as an EIP-191 personal message over exactly this string, equals `address`:
 
 ```
 {"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"<key address>","timestamp":<timestamp>}
@@ -180,11 +183,13 @@ An entry is `{ address, timestamp, signature: { signature, type } }`. It is vali
 
 `authorPublicKey` is the **key address** of the author's signing key: the `12D3KooW…` form derived from `signature.publicKey`. It is never `author.address`, which is `author.name || keyAddress` and follows a name when the name is repointed. The field order is fixed and there is no whitespace.
 
-Verification is stateless. There is no "newest timestamp wins" rule, and no RPC is needed.
+Verification is stateless. There is no "newest timestamp wins" rule, and no RPC is needed. Signatures from contract accounts (ERC-1271) are not `eip191` proofs and do not verify.
+
+The `v` and `s` rules are checked before recovery, because recovery libraries (viem included) accept the other forms. The BSIP draft's test vector is part of this package's tests.
 
 Proofs signed with the older `pkc-author-wallet` or `plebbit-author-wallet` strings, or over `author.address`, do not verify. Authors re-sign.
 
-This format is meant to be recorded in a BSIP of its own. Once pkc-js verifies wallet proofs on acceptance, the check here becomes a second line of defence.
+The BSIP is still a draft, so these rules can change with it. It asks community nodes to verify wallet proofs on acceptance; once pkc-js does, the check here becomes a second line of defence.
 
 ## Known gaps
 
