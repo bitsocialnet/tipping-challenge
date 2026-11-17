@@ -1,0 +1,58 @@
+{
+  "name": "@bitsocial/tipping-challenge",
+  "version": "0.1.0",
+  "description": "Standalone tipping challenge for pkc-js: verifies ERC-20, ERC-721 and native coin tips attached to replies, implementing the tipping/v1 contract",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "AGENTS.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "bitsocial",
+    "pkc",
+    "challenge",
+    "tipping",
+    "evm",
+    "viem"
+  ],
+  "author": "Rinse",
+  "license": "GPL-3.0-or-later",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "viem": "2.55.19"
+  },
+  "devDependencies": {
+    "@pkcprotocol/pkc-js": "0.0.150",
+    "@types/node": "25.3.5",
+    "typescript": "5.9.3",
+    "vitest": "4.1.12"
+  },
+  "peerDependencies": {
+    "@pkcprotocol/pkc-js": ">=0.0.85"
+  },
+  "peerDependenciesMeta": {
+    "@pkcprotocol/pkc-js": {
+      "optional": true
+    }
+  }
+}
