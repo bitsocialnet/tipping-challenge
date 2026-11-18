@@ -287,8 +287,19 @@ export const getRequiredFee = (
   };
 };
 
-// Parses the author-signed tip claim of a reply, found at `comment.author.tip` (or a top-level
-// `comment.tip`). Throws an Error written for the author.
+// Parses the challenge answer a client sends as its tip claim: the JSON text of
+// `{ chainId, txHash, feeTxHash? }`. Challenge answers are strings, so the object travels serialised.
+export const parseTipClaimAnswer = (answer: string): TipClaim => {
+  let value: unknown;
+  try {
+    value = JSON.parse(answer);
+  } catch {
+    throw new Error("the tip claim must be JSON text: { chainId, txHash, feeTxHash? }");
+  }
+  return parseTipClaim(value);
+};
+
+// Validates a tip claim object. Throws an Error written for the author.
 // Unknown keys are refused: the challenge writes its verified result under the same name in the comment
 // update, and a claim must not be able to carry fields that look like that result.
 export const parseTipClaim = (value: unknown): TipClaim => {
@@ -311,7 +322,7 @@ export const parseTipClaim = (value: unknown): TipClaim => {
     throw new Error("tip.txHash must be a transaction hash: 0x followed by 64 hex characters");
   }
   if (feeTxHash !== undefined && !isTxHash(feeTxHash)) {
-    throw new Error("tip.feeTxHash must be a transaction hash: 0x followed by 64 hex characters");
+    throw new Error("feeTxHash must be a transaction hash: 0x followed by 64 hex characters");
   }
 
   const claim: TipClaim = { chainId, txHash: txHash.toLowerCase() };

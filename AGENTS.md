@@ -10,6 +10,7 @@ Reference source files:
 Workflow:
 
 - Before every commit, run `npm run typecheck` and `npm test` and make sure both pass.
+- When asked to commit and push, push a branch and open a pull request against `master` so it can be reviewed. Never push straight to the default branch. Do not put Claude session links in commits, PRs or issues.
 - Tests must not use the network or real funds. The fake chain in `test/helpers.ts` serves a real viem client.
 - Do not use real token addresses in tests or examples unless they are verified against the chain.
 - This package is not published to npm (`"private": true`). Do not publish it without being asked.

@@ -60,6 +60,8 @@ const run = async (
     challengeSettings: settings,
     challengeRequestMessage: request,
     challengeIndex: 0,
+    // What pkc-js passes: this challenge's own pre-answer.
+    challengeAnswer: request.challengeAnswers?.["0"],
     community: target.asCommunity()
   });
 
@@ -104,28 +106,16 @@ describe("the claim", () => {
     expectFailure(await run(request), /unknown key/);
   });
 
-  it("reads the claim from the top level of the comment too", async () => {
+  it("reads the claim only from its own index", async () => {
     const hash = usdcTip(3n);
-    const request = await makeRequest(tipper, { tip: { chainId: 1, txHash: hash }, tipLocation: "topLevel" });
-    expect(await run(request)).toMatchObject({ success: true, commentUpdate: { tip: { txHash: hash, amount: "3" } } });
+    const request = await makeRequest(tipper, { tip: { chainId: 1, txHash: hash } });
+    // Another challenge's pre-answer is at index 1. This challenge sits at index 0 and sees none.
+    request.challengeAnswers = { "1": request.challengeAnswers?.["0"] ?? "" };
+    expect(await run(request)).toEqual({ success: true });
   });
 
-  it("accepts the same claim in both places, and rejects two that differ", async () => {
-    const hash = usdcTip(3n);
-    const same = await makeRequest(tipper, {
-      tip: { chainId: 1, txHash: hash },
-      topLevelTip: { chainId: 1, txHash: hash.toUpperCase().replace("0X", "0x") }
-    });
-    expect(await run(same)).toMatchObject({ success: true });
-
-    const differ = await makeRequest(tipper, {
-      tip: { chainId: 1, txHash: usdcTip(3n) },
-      topLevelTip: { chainId: 1, txHash: usdcTip(4n) }
-    });
-    expectFailure(await run(differ), /both present and differ/);
-
-    const malformedSecond = await makeRequest(tipper, { tip: { chainId: 1, txHash: usdcTip(3n) }, topLevelTip: "x" });
-    expectFailure(await run(malformedSecond), /Invalid tip/);
+  it("rejects an answer that is not JSON", async () => {
+    expectFailure(await run(await makeRequest(tipper, { rawAnswer: "0xabc" })), /must be JSON text/);
   });
 
   it("rejects a tip on a post", async () => {

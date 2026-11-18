@@ -202,7 +202,7 @@ describe("parseTipClaim", () => {
     ["a chainId as a string", { chainId: "1", txHash: hash }, /tip.chainId must be a positive integer/],
     ["a chainId of zero", { chainId: 0, txHash: hash }, /tip.chainId must be a positive integer/],
     ["a short hash", { chainId: 1, txHash: "0xabc" }, /tip.txHash/],
-    ["a bad fee hash", { chainId: 1, txHash: hash, feeTxHash: "nope" }, /tip.feeTxHash/],
+    ["a bad fee hash", { chainId: 1, txHash: hash, feeTxHash: "nope" }, /feeTxHash/],
     ["fields that imitate the verified result", { chainId: 1, txHash: hash, amount: "1000000" }, /unknown key "amount"/]
   ])("rejects %s", (_name, value, message) => {
     expect(() => parseTipClaim(value)).toThrow(message);
