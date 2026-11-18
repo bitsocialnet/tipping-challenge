@@ -5,6 +5,7 @@ import {
   http,
   TransactionNotFoundError,
   TransactionReceiptNotFoundError,
+  webSocket,
   type Address,
   type Chain,
   type Hex,
@@ -106,20 +107,25 @@ export const getRpcUrlsForChain = (rpcUrls: string | undefined, chainId: number)
 
 type TransportFactory = (args: { chainId: number; urls: string[] }) => Transport;
 
+// The URL schemes an rpcUrls entry may use. validateChallengeSettings rejects anything else.
+export const RPC_URL_PROTOCOLS: readonly string[] = ["http:", "https:", "ws:", "wss:"];
+
+const isWebSocketUrl = (url: string): boolean => /^wss?:/i.test(url);
+
+const transportForUrl = (url: string): Transport => (isWebSocketUrl(url) ? webSocket(url) : http(url));
+
 const defaultTransportFactory: TransportFactory = ({ urls }) =>
   urls.length === 0
     ? http()
     : urls.length === 1
-      ? http(urls[0])
-      : fallback(
-          urls.map((url) => http(url)),
-          { rank: true }
-        );
+      ? transportForUrl(urls[0]!)
+      : fallback(urls.map(transportForUrl), { rank: true });
 
 let transportFactory: TransportFactory = defaultTransportFactory;
 
 // Clients are cached per (chain ID, urls): fallback(..., { rank: true }) starts a background interval
-// that is never torn down, so building a client per request would leak a timer per publish.
+// that is never torn down and webSocket() holds a socket open, so building a client per request would
+// leak a timer or a connection per publish.
 const clientCache = new Map<string, PublicClient>();
 
 // Clients whose RPC has reported the chain ID they were built for. Only a confirmation is remembered: a
