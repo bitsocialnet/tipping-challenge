@@ -14,6 +14,7 @@ Three things follow from that design:
 
 - **The community cannot intercept a tip.** The money moves before the reply is published, straight to the recipient.
 - **The community can hide a tip but cannot fake one.** The verified result includes the transaction hash, so any client can check it against the chain.
+- **A payment is made for one comment.** The transaction carries a suffix naming the parent comment, so it cannot back a tip on another comment or in another community. See [The parent binding](#the-parent-binding).
 - **Replies without a tip are not affected.** The challenge never prompts anyone. It passes everything that carries no tip claim.
 
 ## The `tipping/v1` contract
@@ -106,7 +107,7 @@ For a reply that carries a claim, all of these must hold. Each is a separate rej
 6. The parent comment's author has at least one valid entry in `author.wallets` that the tipper has not also proven as their own.
 7. The RPC the community uses for `chainId` reports that chain ID. See [The chain](#the-chain).
 8. The transaction is mined and succeeded.
-9. The transaction's block is not older than the parent comment's `timestamp`.
+9. The transaction ends with the [parent binding](#the-parent-binding) for this reply's `parentCid`.
 10. The transaction moves an accepted token from one of the tipper's wallets to one of the recipient's wallets. See [Finding the tip](#finding-the-tip).
 11. The amount is at least the token's `minAmount`, if set.
 12. The fee, if the token has one and it does not round down to 0, was paid. See [The fee](#the-fee).
@@ -129,6 +130,48 @@ The same token address, and even the same transaction hash, can exist on two cha
 - Before reading anything, it asks the RPC configured for the claim's `chainId` for its chain ID (`eth_chainId`).
 - If the answer differs, or the RPC cannot be asked, the tip is rejected with a message saying so. No transaction is read.
 - A confirmation is remembered for the life of the process. A failure is not, so it is checked again on the next tip.
+
+### The parent binding
+
+A claim names a transaction, and a plain transfer names no comment. So every transaction a claim names, the tip transaction and the fee transaction if there is one, must **end with a fixed 65-byte suffix** that names the parent comment of the reply. The binding is part of the contract, not an option: a community cannot turn it off, and a client must build its own transaction to produce it.
+
+What it closes:
+
+- A payment cannot back a tip on another comment, in the same community or in another one. A comment CID is derived from content that includes the community address.
+- A payment made before the parent comment existed cannot carry that comment's CID, so an old unrelated payment cannot be claimed.
+- A community cannot attach a real payment to a parent it was not made for.
+
+**The suffix.** It is an [ERC-8021](https://eip.tools/eip/8021) schema-2 suffix whose CBOR map holds one metadata entry, `m["bso-tip"]`, with the 32 raw bytes of the hash:
+
+```
+hash   = keccak256(UTF-8 bytes of parentCid)
+suffix = a1 61 6d                  CBOR map with 1 entry, the key "m"
+         a1 67 62736f2d746970      CBOR map with 1 entry, the key "bso-tip" (7 bytes of text)
+         58 20 <hash>              CBOR byte string of 32 bytes
+         00 2e                     length of the CBOR data: 46, two bytes
+         02                        ERC-8021 schema ID
+         8021 8021 8021 8021 8021 8021 8021 8021      ERC-8021 marker, 16 bytes
+```
+
+`parentCid` is the string exactly as it appears in the signed reply's `parentCid`. It is hashed as written, never parsed or re-encoded, so a CIDv0 and a CIDv1 of the same content bind differently.
+
+Test vector. The string is only an example input, and need not be a CID that exists:
+
+```
+parentCid = QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG
+hash      = 0x9e70d347eb27e5edfa2b03409b020ecdaba0997a7a4806a5c441694ea6bf9b5d
+suffix    = 0xa1616da16762736f2d74697058209e70d347eb27e5edfa2b03409b020ecdaba0997a7a4806a5c441694ea6bf9b5d002e0280218021802180218021802180218021
+```
+
+**The check.** The community node reads the transaction's `input` and requires its last 65 bytes to equal the suffix built from this reply's `parentCid`. It does not decode CBOR. Nothing may follow the suffix, so a transaction that carries an ERC-8021 builder code after it does not verify, and a builder code cannot be added to the same map. The suffix is valid ERC-8021 schema 2, so ERC-8021 indexers read it.
+
+**Where it goes.**
+
+- **Native coin:** the transaction's `data` is the suffix.
+- **ERC-20 and ERC-721:** the normal `transfer` or `transferFrom` calldata, followed by the suffix. Solidity's ABI decoder ignores extra trailing calldata, so the call executes as usual. A token contract that rejects trailing calldata cannot be tipped.
+- **Batched transactions (EIP-7702, EIP-5792):** the rule is the same: the outer transaction's `input` must end with the suffix. A wallet UI will not add it, so only a client that builds the batch itself can produce one.
+
+It adds 65 bytes, about 1,000 gas, on top of the 21,000-gas base cost.
 
 ### Finding the tip
 
@@ -154,7 +197,7 @@ The fee is a second transfer, on the same chain ID, from any of the tipper's val
 
 So an ERC-20 or ERC-721 tip can carry its fee in the same transaction when the wallet can batch, or in a separate one when it cannot. A native coin fee is always its own transaction.
 
-The fee transaction must pass the same checks as the tip transaction: mined, succeeded, and not older than the parent comment.
+The fee transaction must pass the same checks as the tip transaction: mined, succeeded, and ending with the [parent binding](#the-parent-binding).
 
 Without a contract the fee is enforced by display only. The recipient keeps the tip either way; the community just does not show a tip that skipped the fee.
 
@@ -219,10 +262,9 @@ The BSIP is still a draft, so these rules can change with it. It asks community 
 
 ## Known gaps
 
-- **One transaction can be claimed once in each community.** A plain transfer names no comment, so the same payment can back a tip reply in community A and another in community B, as long as the recipient has a comment in both. Only a tipping contract that records the tipped comment would close this.
-- **An old payment after the comment was posted.** The freshness rule only rejects transactions older than the tipped comment. A real, unrelated payment made to the same author after that comment was posted can be claimed as a tip on it, once.
-- **The tipper no longer signs which reply a payment is for.** The claim travels in the publish request, not in the signed comment, so a community could attach a real payment to a different reply by the same tipper. It still cannot invent a payment: the verified result names the transaction, and the transfer must run between the two authors' proven wallets.
-- **Comment timestamps are chosen by authors.** The freshness rule compares a block time with the parent comment's own `timestamp`.
+- **The tipper does not sign which reply a payment is for.** The [parent binding](#the-parent-binding) names the parent comment, not the reply. The claim travels in the publish request, not in the signed comment, so a community could attach a real payment to a different reply by the same tipper to the same parent. One transaction still backs one reply, and the community cannot invent a payment: the verified result names the transaction, and the transfer must run between the two authors' proven wallets.
+- **Collusion between a community owner and an author is not prevented.** Both can embed the parent CID. A colluding owner can tip itself in a loop: the owner receives the fee, so it pays the fee to itself. A second key and wallet pass every check, and the owner can accept a worthless token it minted. The cost is gas only. This is a non-goal of the challenge. Defences belong in clients: weight a tip by value, count recognised tokens only, and discount A→B→A loops.
+- **Only clients that control their own calldata can tip.** The parent binding needs a suffix a wallet UI will not add, so a plain wallet app, an exchange withdrawal or a contract wallet cannot produce a verifiable tip. Tipping happens inside clients that hold their own signing keys.
 - **Communities that hide authors.** The recipient's wallet proof is checked against the signing key stored with the parent comment. A community that replaces author identities (pseudonymity) may store a different key there, in which case tips are rejected. This combination has not been tested.
 - **Excluded authors.** An author excused from this challenge by an `exclude` rule skips verification. No verified result is written for their reply, so a tip they paid does not show.
 
@@ -269,10 +311,30 @@ If no entry is valid, do not offer a tip.
 Send the token from a wallet the user has a valid `author.wallets` entry for, to the recipient wallet picked above. If the token has a fee, also send the fee, on the same chain ID, from any of the user's valid wallets to `tipping/v1/feeRecipient`.
 
 - Compute a percentage fee and round **up** if you want to be safe. The community requires at least the rounded-down amount.
-- If the wallet can batch (EIP-7702 or EIP-5792), put an ERC-20 fee in the same transaction as the tip. Otherwise send it separately and put its hash in `feeTxHash`.
-- A native coin tip and a native coin fee are always two direct sends.
+- **End every transaction with the [parent binding](#the-parent-binding)**, built from the `cid` of the comment being tipped. Both the tip transaction and the fee transaction need it. A wallet UI will not add it, so the client sends the transaction itself, for example with viem:
 
-How the transaction is produced is outside this contract.
+```js
+import { concatHex, encodeFunctionData, erc20Abi, keccak256, stringToHex } from "viem";
+
+// parentCid is the string exactly as it will appear in the reply's parentCid
+const suffix = concatHex([
+  "0xa1616da167", stringToHex("bso-tip"), "0x5820", keccak256(stringToHex(parentCid)),
+  "0x002e02", `0x${"8021".repeat(8)}`
+]);
+
+// native coin: the suffix is the data
+await walletClient.sendTransaction({ to: recipient, value: amount, data: suffix });
+
+// ERC-20: the transfer calldata, then the suffix
+await walletClient.sendTransaction({
+  to: tokenAddress,
+  data: concatHex([encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [recipient, amount] }), suffix])
+});
+```
+
+- A fee in the same transaction as the tip needs a batch that the client builds itself, and the outer call must still end with the suffix. Otherwise send the fee as its own transaction, ending with the suffix, and put its hash in `feeTxHash`.
+- A native coin tip and a native coin fee are always two direct sends.
+- Do not append anything after the suffix, such as an ERC-8021 builder code.
 
 ### 4. Wait, then publish
 
