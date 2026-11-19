@@ -107,11 +107,12 @@ For a reply that carries a claim, all of these must hold. Each is a separate rej
 6. The parent comment's author has at least one valid entry in `author.wallets` that the tipper has not also proven as their own.
 7. The RPC the community uses for `chainId` reports that chain ID. See [The chain](#the-chain).
 8. The transaction is mined and succeeded.
-9. The transaction ends with the [parent binding](#the-parent-binding) for this reply's `parentCid`.
-10. The transaction moves an accepted token from one of the tipper's wallets to one of the recipient's wallets. See [Finding the tip](#finding-the-tip).
-11. The amount is at least the token's `minAmount`, if set.
-12. The fee, if the token has one and it does not round down to 0, was paid. See [The fee](#the-fee).
-13. Neither the tip transaction nor the fee transaction has backed another tip on that chain ID in this community.
+9. The transaction was sent by one of the tipper's wallets. See [Who sends the transaction](#who-sends-the-transaction).
+10. The transaction ends with the [parent binding](#the-parent-binding) for this reply's `parentCid`.
+11. The transaction moves an accepted token from one of the tipper's wallets to one of the recipient's wallets. See [Finding the tip](#finding-the-tip).
+12. The amount is at least the token's `minAmount`, if set.
+13. The fee, if the token has one and it does not round down to 0, was paid. See [The fee](#the-fee).
+14. Neither the tip transaction nor the fee transaction has backed another tip on that chain ID in this community.
 
 ### Which wallets count
 
@@ -137,8 +138,8 @@ A claim names a transaction, and a plain transfer names no comment. So every tra
 
 What it closes:
 
-- A payment cannot back a tip on another comment, in the same community or in another one. A comment CID is derived from content that includes the community address.
-- A payment made before the parent comment existed cannot carry that comment's CID, so an old unrelated payment cannot be claimed.
+- A payment cannot back a tip on another comment, in the same community or in another one. A transaction ends with one suffix only, and a comment CID is derived from content that includes the community address.
+- An unrelated payment cannot be claimed as a tip. Only the payer writes the suffix, so a payment that carries a comment's CID was made for that comment. The suffix says nothing about when the comment was published, and no rule compares the block time with the comment's `timestamp`.
 - A community cannot attach a real payment to a parent it was not made for.
 
 **The suffix.** It is an [ERC-8021](https://eip.tools/eip/8021) schema-2 suffix whose CBOR map holds one metadata entry, `m["bso-tip"]`, with the 32 raw bytes of the hash:
@@ -167,11 +168,27 @@ suffix    = 0xa1616da16762736f2d74697058209e70d347eb27e5edfa2b03409b020ecdaba099
 
 **Where it goes.**
 
-- **Native coin:** the transaction's `data` is the suffix.
+- **Native coin:** the transaction's `data` is the suffix. A receiver that has code runs its fallback function on a send that carries data, and may revert. See [the fee](#the-fee) for what that means for a fee recipient.
 - **ERC-20 and ERC-721:** the normal `transfer` or `transferFrom` calldata, followed by the suffix. Solidity's ABI decoder ignores extra trailing calldata, so the call executes as usual. A token contract that rejects trailing calldata cannot be tipped.
-- **Batched transactions (EIP-7702, EIP-5792):** the rule is the same: the outer transaction's `input` must end with the suffix. A wallet UI will not add it, so only a client that builds the batch itself can produce one.
+- **Batched transactions:** the rule is the same: the outer transaction's `input` must end with the suffix, and the tipper must send it. See [Who sends the transaction](#who-sends-the-transaction).
 
 It adds 65 bytes, about 1,000 gas, on top of the 21,000-gas base cost.
+
+### Who sends the transaction
+
+Every transaction a claim names, tip or fee, must be **sent by one of the tipper's proven wallets**: the transaction's own `from`, not only the `from` of a `Transfer` event inside it.
+
+The reason is the suffix. It sits in the outer transaction's `input`, and only the account that sends a transaction signs its `input`. If anyone could send it, a relayer could append a suffix the tipper never chose. With this rule the tipper's own key has signed the binding.
+
+What this excludes:
+
+- **Sponsored and relayed transactions**, where another account pays the gas and submits the transaction.
+- **ERC-4337 user operations.** The outer transaction is the bundler's `handleOps` call. The bundler sends it, and it does not end with the suffix.
+- **EIP-5792 `wallet_sendCalls`**, when the wallet behind it submits through a bundler or a relayer, or does not append the suffix.
+
+What still works: a transaction the tipper's wallet sends itself, including an EIP-7702 batch the tipper sends to their own account, as long as the outer `input` ends with the suffix.
+
+This rule is strict on purpose. Accepting any sender later would not invalidate a tip that passes today, so it can be relaxed without breaking anything. The reverse is not true.
 
 ### Finding the tip
 
@@ -180,7 +197,7 @@ The claim does not name a token, so the rule for which transfer is the tip is pa
 1. If the native coin is accepted on that chain ID, and the transaction itself was sent by one of the tipper's wallets to one of the recipient's wallets with a value above 0, the tip is that value.
 2. Otherwise the tip is the first `Transfer` event in the transaction, in log order, that is emitted by a token contract accepted on that chain ID, goes from one of the tipper's wallets to one of the recipient's wallets, and has the shape of that entry's `type`.
 
-`from` is the sender in the event, not the account that submitted the transaction. An ERC-20 or ERC-721 tip sent through a batching or smart account therefore verifies normally.
+`from` in rule 2 is the sender in the event. It need not be the wallet that sent the transaction, but both must be wallets of the tipper: [the tipper sends every claimed transaction](#who-sends-the-transaction). So a tipper with two proven wallets can move a token out of one with a `transferFrom` sent by the other. A tip submitted by a relayer, a bundler or any other account does not verify.
 
 An ERC-20 `Transfer` has two indexed arguments and the amount in the data. An ERC-721 `Transfer` has three indexed arguments, the last being the token ID. An event of one shape on an entry of the other type is ignored.
 
@@ -195,9 +212,11 @@ The fee is a second transfer, on the same chain ID, from any of the tipper's val
 | An ERC-20 | A `Transfer` event of that token from one of the tipper's wallets to the fee recipient, in `feeTxHash` if given, else in `txHash`. It must be a different event from the tip itself |
 | The native coin | `feeTxHash` must be given and must differ from `txHash`. That transaction must be sent by one of the tipper's wallets to the fee recipient with a value of at least the fee |
 
-So an ERC-20 or ERC-721 tip can carry its fee in the same transaction when the wallet can batch, or in a separate one when it cannot. A native coin fee is always its own transaction.
+So an ERC-20 or ERC-721 tip can carry its fee in the same transaction only when the client builds a batch itself and the tipper's wallet sends it. Otherwise the fee is a separate transaction. A native coin fee is always its own transaction.
 
-The fee transaction must pass the same checks as the tip transaction: mined, succeeded, and ending with the [parent binding](#the-parent-binding).
+The fee transaction must pass the same checks as the tip transaction: mined, succeeded, [sent by one of the tipper's wallets](#who-sends-the-transaction), and ending with the [parent binding](#the-parent-binding).
+
+**A native fee recipient must accept a send that carries data.** The fee transaction's `data` is the suffix. A plain wallet address accepts it. A contract, such as a multisig treasury, runs its fallback function and may revert, and then nobody can pay that community's native fee. A community that charges a fee in the native coin sets `tipping/v1/feeRecipient` to a plain wallet, or to a contract known to accept data. The node cannot check this when settings are saved. An ERC-20 fee is not affected: that call goes to the token contract.
 
 Without a contract the fee is enforced by display only. The recipient keeps the tip either way; the community just does not show a tip that skipped the fee.
 
@@ -265,6 +284,8 @@ The BSIP is still a draft, so these rules can change with it. It asks community 
 - **The tipper does not sign which reply a payment is for.** The [parent binding](#the-parent-binding) names the parent comment, not the reply. The claim travels in the publish request, not in the signed comment, so a community could attach a real payment to a different reply by the same tipper to the same parent. One transaction still backs one reply, and the community cannot invent a payment: the verified result names the transaction, and the transfer must run between the two authors' proven wallets.
 - **Collusion between a community owner and an author is not prevented.** Both can embed the parent CID. A colluding owner can tip itself in a loop: the owner receives the fee, so it pays the fee to itself. A second key and wallet pass every check, and the owner can accept a worthless token it minted. The cost is gas only. This is a non-goal of the challenge. Defences belong in clients: weight a tip by value, count recognised tokens only, and discount A→B→A loops.
 - **Only clients that control their own calldata can tip.** The parent binding needs a suffix a wallet UI will not add, so a plain wallet app, an exchange withdrawal or a contract wallet cannot produce a verifiable tip. Tipping happens inside clients that hold their own signing keys.
+- **No sponsored gas.** [The tipper sends every claimed transaction](#who-sends-the-transaction), so the tipper's wallet needs the chain's native coin for gas, even for an ERC-20 or ERC-721 tip. Relayers, paymasters and ERC-4337 bundlers cannot submit a tip.
+- **A tip payment is recognisable on chain.** The suffix marks the transaction as a tip, whether or not the community shows it. Anyone who holds a comment's CID can hash it and match the payment to that comment, even when the reply was rejected or the tip is hidden.
 - **Communities that hide authors.** The recipient's wallet proof is checked against the signing key stored with the parent comment. A community that replaces author identities (pseudonymity) may store a different key there, in which case tips are rejected. This combination has not been tested.
 - **Excluded authors.** An author excused from this challenge by an `exclude` rule skips verification. No verified result is written for their reply, so a tip they paid does not show.
 
@@ -332,7 +353,9 @@ await walletClient.sendTransaction({
 });
 ```
 
-- A fee in the same transaction as the tip needs a batch that the client builds itself, and the outer call must still end with the suffix. Otherwise send the fee as its own transaction, ending with the suffix, and put its hash in `feeTxHash`.
+- **Send every transaction from one of the user's proven wallets.** Do not hand it to a relayer, a paymaster or an ERC-4337 bundler: [the tipper must be the sender](#who-sends-the-transaction). The wallet therefore needs native coin for gas.
+- **Simulate the tip and the fee transaction before sending either** (`eth_estimateGas` or `eth_call`, with the suffix in place). A receiver with code, or a token contract that rejects trailing calldata, makes the transaction revert. Simulating first means the user never pays a tip whose fee cannot be paid.
+- A fee in the same transaction as the tip needs a batch that the client builds itself and the user's wallet sends, and the outer call must still end with the suffix. Otherwise send the fee as its own transaction, ending with the suffix, and put its hash in `feeTxHash`.
 - A native coin tip and a native coin fee are always two direct sends.
 - Do not append anything after the suffix, such as an ERC-8021 builder code.
 
