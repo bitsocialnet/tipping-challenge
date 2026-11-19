@@ -172,10 +172,10 @@ suffix    = 0xa1616da16762736f2d74697058209e70d347eb27e5edfa2b03409b020ecdaba099
 - **ERC-20 and ERC-721:** the normal `transfer` or `transferFrom` calldata, followed by the suffix. Solidity's ABI decoder ignores extra trailing calldata, so the call executes as usual. A token contract that rejects trailing calldata cannot be tipped.
 - **Batched transactions:** the rule is the same: the outer transaction's `input` must end with the suffix, and the tipper must send it. See [Who sends the transaction](#who-sends-the-transaction).
 
-It adds 65 bytes: 64 non-zero and one zero.
+It adds 65 bytes. One is always zero. The other 64 are non-zero, except for any zero byte in the hash (about one hash in eight has one). A zero byte costs less, so the figures below are upper bounds.
 
-- On a token transfer that is about 1,000 gas (1,028).
-- On a native coin send it is about 2,600 gas. A plain send has no execution gas, so the EIP-7623 calldata floor applies: 10 gas for each zero byte and 40 for each non-zero byte, 2,570 in total, on top of the 21,000-gas base cost. This holds on chains that have adopted EIP-7623.
+- On a token transfer that is at most 1,028 gas.
+- On a native coin send it is at most 2,570 gas. A plain send has no execution gas, so the EIP-7623 calldata floor applies: 10 gas for each zero byte and 40 for each non-zero byte, on top of the 21,000-gas base cost. This holds on chains that have adopted EIP-7623.
 
 ### Who sends the transaction
 
@@ -360,7 +360,7 @@ await walletClient.sendTransaction({
 - **Send every transaction from one of the user's proven wallets.** Do not hand it to a relayer, a paymaster or an ERC-4337 bundler: [the tipper must be the sender](#who-sends-the-transaction). The wallet therefore needs native coin for gas.
 - **Simulate the tip and the fee transaction before sending either** (`eth_estimateGas` or `eth_call`, with the suffix in place). A receiver with code, or a token contract that rejects trailing calldata, makes the transaction revert, and simulating shows that before any money moves.
 - **Check that the balance covers both.** Each simulation runs against the balance as it is now, so two that pass separately can still fail in sequence. Before sending, check that the wallet holds the tip plus the fee, and native coin for the gas of both.
-- **Send the fee first, then the tip.** If one of them fails, it is then the small one. Simulation is a check, not a guarantee: the chain can change between the simulation and the send.
+- **Send the fee first, and wait until it is mined and succeeded before sending the tip.** If the fee fails, the tip has not been sent. Simulation is a check, not a guarantee: the chain can change between the simulation and the send.
 - **A failed fee can be sent again.** The tip is not lost for display as long as the fee is paid before publishing: send a new fee transaction, ending with the same suffix, and put its hash in `feeTxHash`.
 - A fee in the same transaction as the tip needs a batch that the client builds itself and the user's wallet sends, and the outer call must still end with the suffix. Otherwise send the fee as its own transaction, ending with the suffix, and put its hash in `feeTxHash`.
 - A native coin tip and a native coin fee are always two direct sends.
