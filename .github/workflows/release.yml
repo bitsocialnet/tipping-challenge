@@ -131,6 +131,20 @@ jobs:
             echo "publish=true" >> $GITHUB_OUTPUT
           fi
 
+      # A recovery publish (release-it did not run, but the tag already exists) must ship
+      # the tagged source, not whatever master holds now.
+      - name: Build the tagged source for a recovery publish
+        if: >-
+          steps.tip.outputs.current == 'true' && steps.npm.outputs.publish == 'true'
+          && steps.commits.outputs.releasable != 'true'
+        run: |
+          TAG="v$(node -p "require('./package.json').version")"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            git checkout --detach "$TAG"
+            npm ci
+            npm run build
+          fi
+
       - name: Publish to npm
         if: steps.tip.outputs.current == 'true' && steps.npm.outputs.publish == 'true'
         run: npx --yes npm@latest publish --access public --provenance
