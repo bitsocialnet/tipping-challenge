@@ -28,6 +28,7 @@ import {
   getConfirmedChainClient,
   getRpcUrlsForChain,
   parseRpcUrls,
+  RPC_URL_PROTOCOLS,
   readTransaction,
   rpcUrlsRequiredMessage,
   type MinedTransaction,
@@ -66,7 +67,7 @@ const optionInputs: NonNullable<ChallengeFileInput["optionInputs"]> = [
     label: "RPC URLs",
     default: "",
     description:
-      'JSON object mapping a chain ID to comma-separated JSON-RPC URLs, e.g. {"1":"https://a,https://b","8453":"https://c"}. A plain comma-separated list is also accepted when every token is on the same chain ID. Optional for a chain ID with a built-in RPC, required otherwise. Recommended even when optional: the built-in RPC is shared and rate-limited. Each endpoint must report the chain ID it is listed under.',
+      'JSON object mapping a chain ID to comma-separated JSON-RPC URLs (http, https, ws or wss), e.g. {"1":"https://a,https://b","8453":"https://c"}. A plain comma-separated list is also accepted when every token is on the same chain ID. Optional for a chain ID with a built-in RPC, required otherwise. Recommended even when optional: the built-in RPC is shared and rate-limited. Each endpoint must report the chain ID it is listed under.',
     placeholder: '{"1":"https://eth.llamarpc.com,https://rpc.ankr.com/eth"}'
   }
 ];
@@ -146,8 +147,8 @@ const validateChallengeSettings = ({ challengeSettings }: { challengeSettings: C
     } catch {
       throw new Error(`option rpcUrls contains an entry that is not a valid URL: "${url}"`);
     }
-    if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
-      throw new Error(`option rpcUrls entry "${url}" must use http: or https:, got "${parsedUrl.protocol}"`);
+    if (!RPC_URL_PROTOCOLS.includes(parsedUrl.protocol)) {
+      throw new Error(`option rpcUrls entry "${url}" must use http:, https:, ws: or wss:, got "${parsedUrl.protocol}"`);
     }
   }
 

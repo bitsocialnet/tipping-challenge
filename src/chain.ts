@@ -5,6 +5,7 @@ import {
   http,
   TransactionNotFoundError,
   TransactionReceiptNotFoundError,
+  webSocket,
   type Address,
   type Chain,
   type Hex,
@@ -106,15 +107,37 @@ export const getRpcUrlsForChain = (rpcUrls: string | undefined, chainId: number)
 
 type TransportFactory = (args: { chainId: number; urls: string[] }) => Transport;
 
+// The URL schemes an rpcUrls entry may use. validateChallengeSettings rejects anything else.
+export const RPC_URL_PROTOCOLS: readonly string[] = ["http:", "https:", "ws:", "wss:"];
+
+// The scheme is read from the parsed URL, as validateChallengeSettings reads it, so the two cannot
+// disagree: URL parsing lowercases the scheme and drops tabs and newlines, which a match on the raw
+// string would not.
+const isWebSocketUrl = (url: string): boolean => {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === "ws:" || protocol === "wss:";
+  } catch {
+    return false;
+  }
+};
+
+// viem gives up on a dropped socket after 5 reconnect attempts by default and keeps handing out the dead
+// socket afterwards, so an outage of a few seconds would stop tips until the node restarts. Retrying
+// without limit lets the endpoint recover on its own. viem logs every failed attempt, so they are spaced
+// out.
+const WEBSOCKET_RECONNECT = { attempts: Number.POSITIVE_INFINITY, delay: 10_000 };
+
+// Exported for tests only. Not re-exported from index.ts.
+export const transportForUrl = (url: string): Transport =>
+  isWebSocketUrl(url) ? webSocket(url, { reconnect: WEBSOCKET_RECONNECT }) : http(url);
+
 const defaultTransportFactory: TransportFactory = ({ urls }) =>
   urls.length === 0
     ? http()
     : urls.length === 1
-      ? http(urls[0])
-      : fallback(
-          urls.map((url) => http(url)),
-          { rank: true }
-        );
+      ? transportForUrl(urls[0]!)
+      : fallback(urls.map(transportForUrl), { rank: true });
 
 let transportFactory: TransportFactory = defaultTransportFactory;
 

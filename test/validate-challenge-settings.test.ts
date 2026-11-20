@@ -81,9 +81,15 @@ describe("validateChallengeSettings", () => {
     expect(validate({ tokens: [native], feeRecipient: FEE_RECIPIENT })).toThrow(/no token has a fee/);
   });
 
-  it("rejects an rpcUrls entry that is not an http URL", () => {
+  it("rejects an rpcUrls entry that is not an http or WebSocket URL", () => {
     expect(validate({ tokens: [native], rpcUrls: "not a url" })).toThrow(/not a valid URL/);
-    expect(validate({ tokens: [native], rpcUrls: "ws://rpc.example" })).toThrow(/must use http: or https:/);
+    expect(validate({ tokens: [native], rpcUrls: "ftp://rpc.example" })).toThrow(/must use http:, https:, ws: or wss:/);
+  });
+
+  it("accepts WebSocket rpcUrls, alone or mixed with http", () => {
+    expect(validate({ tokens: [native], rpcUrls: "ws://rpc.example" })).not.toThrow();
+    expect(validate({ tokens: [native], rpcUrls: "wss://a.example, https://b.example" })).not.toThrow();
+    expect(validate({ tokens: [native], rpcUrls: JSON.stringify({ "1": "wss://a.example" }) })).not.toThrow();
   });
 
   it("accepts a comma-separated rpcUrls list for one chain", () => {

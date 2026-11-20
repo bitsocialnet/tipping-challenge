@@ -526,11 +526,13 @@ Add the challenge to the community's `settings.challenges`. Option values are st
 | `tipping/v1/feeRecipient` | when a token has a fee | must be, when set | Where fees are paid |
 | `rpcUrls` | for chain IDs with no built-in RPC | must not be | JSON-RPC endpoints the node reads transactions from |
 
-`rpcUrls` is a JSON object keyed by chain ID. JSON keys are strings, so the chain ID is written as a string key. Each value is a comma-separated list of URLs:
+`rpcUrls` is a JSON object keyed by chain ID. JSON keys are strings, so the chain ID is written as a string key. Each value is a comma-separated list of URLs. A URL is `http:`, `https:`, `ws:` or `wss:`, and the schemes can be mixed in one list:
 
 ```json
-{ "1": "https://a.example,https://b.example", "8453": "https://c.example" }
+{ "1": "https://a.example,wss://b.example", "8453": "https://c.example" }
 ```
+
+A WebSocket connection that drops is reopened every 10 seconds until the endpoint answers again, so an outage does not need a node restart.
 
 A plain comma-separated list of URLs is also accepted, but only when every token entry uses the same single chain ID.
 
@@ -543,7 +545,7 @@ Settings are checked when they are saved. The edit is rejected when:
 - `tipping/v1/tokens` is not in `publicOptions`, or the list is malformed;
 - a token has a fee and `tipping/v1/feeRecipient` is missing, is not an address, or is not in `publicOptions`;
 - `tipping/v1/feeRecipient` is set but no token has a fee;
-- `rpcUrls` is in `publicOptions` (RPC URLs often embed an API key), is malformed, has a key that is not a chain ID or that no token uses, is a plain list while the tokens span several chain IDs, or is missing for a chain ID with no built-in RPC.
+- `rpcUrls` is in `publicOptions` (RPC URLs often embed an API key), is malformed, has an entry that is not an `http:`, `https:`, `ws:` or `wss:` URL, has a key that is not a chain ID or that no token uses, is a plain list while the tokens span several chain IDs, or is missing for a chain ID with no built-in RPC.
 
 ### Moderation
 
