@@ -229,6 +229,7 @@ On success the challenge writes this into the reply's comment update:
 
 ```js
 commentUpdate.tip = {
+  contract: "tipping/v1", // the contract, with its version, that the tip was verified under
   chainId: 1,
   txHash: "0x…",
   type: "erc20",          // "native" | "erc20" | "erc721"
@@ -247,6 +248,8 @@ commentUpdate.tip = {
 ```
 
 Addresses are written with their EIP-55 checksum. Hashes are lowercase.
+
+`contract` names the rules, not the software: any implementation of this contract writes `"tipping/v1"`. A community can move to a later version while its older comment updates still hold tips verified under this one, so a client that checks a tip itself reads `contract` to know which rules to apply, and treats a value it does not know as a tip it cannot check.
 
 It lives in the comment update, not in the comment, so a community that later stops showing tips can drop it. The reply itself, with its claim, is permanent.
 

@@ -4,6 +4,10 @@
 
 import { concatHex, isAddress, keccak256, stringToHex, type Hex } from "viem";
 
+// The name of this contract, version included. The challenge writes it into every verified tip, so a
+// client that finds a tip knows which rules it was verified under, whatever the community runs today.
+export const TIPPING_V1_CONTRACT = "tipping/v1";
+
 export const TIPPING_V1_TOKENS_OPTION = "tipping/v1/tokens";
 export const TIPPING_V1_FEE_RECIPIENT_OPTION = "tipping/v1/feeRecipient";
 
@@ -72,6 +76,8 @@ export interface TipClaim {
 
 // What the challenge writes into the tip reply's comment update.
 export interface VerifiedTip {
+  // The contract the tip was verified under. A later version writes another string here.
+  contract: typeof TIPPING_V1_CONTRACT;
   chainId: number;
   txHash: string;
   type: TipTokenType;

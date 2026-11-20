@@ -534,7 +534,7 @@ describe("accepted tips", () => {
     expect(result).toEqual({
       success: true,
       commentUpdate: {
-        tip: { chainId: 1, txHash: hash, type: "erc20", token: USDC, from, to, amount: "5000000" }
+        tip: { contract: "tipping/v1", chainId: 1, txHash: hash, type: "erc20", token: USDC, from, to, amount: "5000000" }
       }
     });
   });
@@ -558,7 +558,7 @@ describe("accepted tips", () => {
     const result = await run(await makeRequest(tipper, { tip: { chainId: 1, txHash: hash } }));
     expect(result).toEqual({
       success: true,
-      commentUpdate: { tip: { chainId: 1, txHash: hash, type: "erc721", token: NFT, from, to, tokenId: "4242" } }
+      commentUpdate: { tip: { contract: "tipping/v1", chainId: 1, txHash: hash, type: "erc721", token: NFT, from, to, tokenId: "4242" } }
     });
   });
 
@@ -567,7 +567,7 @@ describe("accepted tips", () => {
     const result = await run(await makeRequest(tipper, { tip: { chainId: 1, txHash: hash } }));
     expect(result).toEqual({
       success: true,
-      commentUpdate: { tip: { chainId: 1, txHash: hash, type: "native", from, to, amount: "10000000000000000" } }
+      commentUpdate: { tip: { contract: "tipping/v1", chainId: 1, txHash: hash, type: "native", from, to, amount: "10000000000000000" } }
     });
   });
 
@@ -645,6 +645,7 @@ describe("community fee", () => {
       success: true,
       commentUpdate: {
         tip: {
+          contract: "tipping/v1",
           chainId: 1,
           txHash: hash,
           type: "erc20",
@@ -804,6 +805,7 @@ describe("community fee", () => {
         success: true,
         commentUpdate: {
           tip: {
+            contract: "tipping/v1",
             chainId: 1,
             txHash: tipHash,
             type: "native",

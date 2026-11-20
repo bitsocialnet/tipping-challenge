@@ -14,6 +14,7 @@ import {
   isConfigAddress,
   parseTipClaimAnswer,
   parseTipTokens,
+  TIPPING_V1_CONTRACT,
   TIPPING_V1_FEE_RECIPIENT_OPTION,
   TIPPING_V1_TOKENS_OPTION,
   tokensHaveFee,
@@ -481,6 +482,7 @@ const getChallenge = async ({
   }
 
   const verified: VerifiedTip = {
+    contract: TIPPING_V1_CONTRACT,
     chainId: claim.chainId,
     txHash: claim.txHash,
     type: tip.token.type,
