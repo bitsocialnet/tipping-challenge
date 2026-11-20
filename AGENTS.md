@@ -15,4 +15,4 @@ Workflow:
 - Keep the README's code snippets up to date with the code they restate: the wallet proof snippets with `src/wallet-proof.ts` and `getWalletMessageToSign`, the parent binding snippet with `getParentBindingSuffix`, the fee snippet with `getRequiredFee`. When one changes, change the other in the same commit.
 - Tests must not use the network or real funds. The fake chain in `test/helpers.ts` serves a real viem client.
 - Do not use real token addresses in tests or examples unless they are verified against the chain.
-- This package is not published to npm (`"private": true`). Do not publish it without being asked.
+- Publishing to npm happens only through `.github/workflows/release.yml` (release-it on conventional commits, then OIDC trusted publishing). Never run `npm publish` by hand or bump the version or `CHANGELOG.md` yourself. Commit messages must be conventional commits (`feat:`, `fix:`, `feat!:` ...); commitlint enforces this through husky. `ci.yml` must keep the name `CI`, since the release workflow keys off it.
