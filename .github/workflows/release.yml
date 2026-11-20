@@ -6,10 +6,20 @@ on:
     types: ["completed"]
     branches: [master]
 
+# Never run two releases at once: they would race to tag and publish the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # Only a push to master of this repo. A fork PR from its own `master` branch also
+    # reports head_branch == 'master' and must not release.
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_repository.full_name == github.repository }}
     permissions:
       contents: write
       id-token: write
@@ -19,29 +29,52 @@ jobs:
           ref: master
           fetch-depth: 0
 
+      # Release only the commit whose CI passed. If master moved on, the CI run of the
+      # newer commit triggers its own release.
+      - name: Check master is the tested commit
+        id: tip
+        env:
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ "$(git rev-parse HEAD)" = "$TESTED_SHA" ]; then
+            echo "current=true" >> $GITHUB_OUTPUT
+          else
+            echo "master moved past $TESTED_SHA; skipping, a later CI run will release"
+            echo "current=false" >> $GITHUB_OUTPUT
+          fi
+
       - uses: actions/setup-node@v4
+        if: steps.tip.outputs.current == 'true'
         with:
           node-version: 22
           cache: 'npm'
 
-      - run: npm ci
-      - run: npm run build
+      - if: steps.tip.outputs.current == 'true'
+        run: npm ci
+      - if: steps.tip.outputs.current == 'true'
+        run: npm run build
 
       - name: Set up Git author
+        if: steps.tip.outputs.current == 'true'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
 
       - name: Get current version
+        if: steps.tip.outputs.current == 'true'
         id: before
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
+      # No `|| true`: if release-it fails after bumping, nothing must be published.
+      # "No commits since the last tag" exits 0 (git.requireCommitsFail is false).
       - name: Run release-it
+        if: steps.tip.outputs.current == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run release -- --ci || true
+        run: npm run release -- --ci
 
       - name: Check if released
+        if: steps.tip.outputs.current == 'true'
         id: release
         run: |
           AFTER=$(node -p "require('./package.json').version")
@@ -54,5 +87,5 @@ jobs:
           fi
 
       - name: Publish to npm
-        if: steps.release.outputs.released == 'true'
+        if: steps.tip.outputs.current == 'true' && steps.release.outputs.released == 'true'
         run: npx --yes npm@latest publish --access public --provenance
