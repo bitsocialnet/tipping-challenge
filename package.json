@@ -1,6 +1,6 @@
 {
   "name": "@bitsocial/tipping-challenge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Standalone tipping challenge for pkc-js: verifies ERC-20, ERC-721 and native coin tips attached to replies, implementing the tipping/v1 contract",
   "type": "module",
   "main": "./dist/index.js",
