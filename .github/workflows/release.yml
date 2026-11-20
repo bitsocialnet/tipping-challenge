@@ -76,14 +76,14 @@ jobs:
           git config --local user.name "github-actions[bot]"
 
       # release-it bumps a patch for any commit, even test: or ci:. Only release when a
-      # commit since the last tag is releasable: feat, fix, perf, revert or breaking.
+      # commit since the last tag is releasable: feat, fix, perf, revert (including git's `Revert "..."`) or breaking.
       - name: Check for releasable commits
         if: steps.tip.outputs.current == 'true'
         id: commits
         run: |
           LAST=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)
           if git log "${LAST:+$LAST..}HEAD" --format='%s%n%b' \
-             | grep -Eq '^((feat|fix|perf|revert)(\([^)]*\))?!?:|BREAKING[ -]CHANGE)'; then
+             | grep -Eq '^((feat|fix|perf|revert)(\([^)]*\))?!?:|Revert "|BREAKING[ -]CHANGE)'; then
             echo "releasable=true" >> $GITHUB_OUTPUT
           else
             echo "No feat, fix, perf, revert or breaking commit since ${LAST:-the start}"
