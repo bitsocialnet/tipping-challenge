@@ -39,7 +39,7 @@ jobs:
         env:
           TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          WATCHED="package.json package-lock.json tsconfig.json tsconfig.build.json vitest.config.ts src test .github"
+          WATCHED="package.json package-lock.json tsconfig.json tsconfig.build.json vitest.config.ts src test config commitlint.config.cjs .husky .github"
           is_release_commit() {
             [ "$(git log -1 --format=%ae "$1")" = "github-actions[bot]@users.noreply.github.com" ] || return 1
             git log -1 --format=%s "$1" | grep -q '^chore(release): ' || return 1
@@ -82,8 +82,11 @@ jobs:
         id: commits
         run: |
           LAST=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)
-          if git log "${LAST:+$LAST..}HEAD" --format='%s%n%b' \
-             | grep -Eq '^((feat|fix|perf|revert)(\([^)]*\))?!?:|Revert "|BREAKING[ -]CHANGE)'; then
+          RANGE="${LAST:+$LAST..}HEAD"
+          # Judge the header (subject) and a real `BREAKING CHANGE:` footer only. A
+          # free-form body line such as "fix: example" must not make a docs: commit releasable.
+          if git log "$RANGE" --format=%s | grep -Eq '^((feat|fix|perf|revert)(\([^)]*\))?!?:|Revert ")' \
+             || git log "$RANGE" --format=%b | grep -Eq '^BREAKING[ -]CHANGE: '; then
             echo "releasable=true" >> $GITHUB_OUTPUT
           else
             echo "No feat, fix, perf, revert or breaking commit since ${LAST:-the start}"

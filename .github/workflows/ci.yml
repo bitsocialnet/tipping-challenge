@@ -1,9 +1,9 @@
 name: CI
 on:
   push:
-    paths: ['package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.build.json', 'vitest.config.ts', 'src/**', 'test/**', '.github/**']
+    paths: ['package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.build.json', 'vitest.config.ts', 'src/**', 'test/**', 'config/**', 'commitlint.config.cjs', '.husky/**', '.github/**']
   pull_request:
-    paths: ['package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.build.json', 'vitest.config.ts', 'src/**', 'test/**', '.github/**']
+    paths: ['package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.build.json', 'vitest.config.ts', 'src/**', 'test/**', 'config/**', 'commitlint.config.cjs', '.husky/**', '.github/**']
 jobs:
   test:
     runs-on: ubuntu-latest
