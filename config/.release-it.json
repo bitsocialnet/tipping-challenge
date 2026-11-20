@@ -7,7 +7,7 @@
     "tagAnnotation": "v${version}",
     "tagName": "v${version}",
     "push": true,
-    "pushArgs": ["--follow-tags"]
+    "pushArgs": ["--follow-tags", "--atomic"]
   },
   "npm": { "publish": false },
   "github": {
