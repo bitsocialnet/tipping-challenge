@@ -727,6 +727,16 @@ describe("community fee", () => {
     expect((result as unknown as { commentUpdate: { tip: { fee?: unknown } } }).commentUpdate.tip.fee).toBeUndefined();
   });
 
+  it("ignores a feeTxHash when no fee is owed: it is not read and not marked as used", async () => {
+    // Not on the fake chain at all, so reading it would reject the claim as not mined.
+    const feeTxHash = newTxHash();
+    const request = await makeRequest(tipper, { tip: { chainId: 1, txHash: usdcTip(39n), feeTxHash } });
+    const result = await run(request, percentSettings);
+    expect(result).toMatchObject({ success: true });
+    expect((result as unknown as { commentUpdate: { tip: { fee?: unknown } } }).commentUpdate.tip.fee).toBeUndefined();
+    expect([...community.storage.keys()].some((key) => key.includes(feeTxHash))).toBe(false);
+  });
+
   it("does not count the tip's own transfer as the fee when the fee recipient is the author being tipped", async () => {
     const settings = buildSettings({ tokens: [{ ...usdc, fee: { percent: "50" } }], feeRecipient: to });
     const alone = chain.add(newTxHash(), {

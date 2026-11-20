@@ -219,6 +219,8 @@ So an ERC-20 or ERC-721 tip can carry its fee in the same transaction only when 
 
 The fee transaction must pass the same checks as the tip transaction: mined, succeeded, [sent by one of the tipper's wallets](#who-sends-the-transaction), and ending with the [parent binding](#the-parent-binding).
 
+When no fee is owed, a `feeTxHash` in the claim is ignored: the transaction is not read, not checked and not marked as used. A client that rounds a percentage fee up may pay a fee the community rounds down to 0, and that tip still verifies.
+
 **A native fee recipient must accept a send that carries data.** The fee transaction's `data` is the suffix. An address with no code accepts it. An address with code runs that code and may revert, and then nobody can pay that community's native fee. That covers a contract, such as a multisig treasury, and also an ordinary wallet that has delegated to a smart account through EIP-7702. A community that charges a fee in the native coin sets `tipping/v1/feeRecipient` to a wallet with no code, or to a contract or delegate known to accept a send that carries data. The node cannot check this when settings are saved, and a delegation added later can break native fees that worked before. An ERC-20 fee is not affected: that call goes to the token contract.
 
 Without a contract the fee is enforced by display only. The recipient keeps the tip either way; the community just does not show a tip that skipped the fee.
