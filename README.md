@@ -2,7 +2,7 @@
 
 A [pkc-js](https://github.com/pkcprotocol/pkc-js) challenge that lets a community show verified tips. It implements the [`tipping/v1` contract](#the-tippingv1-contract), which is what publishing clients code against.
 
-> **Status: experimental.** This README is the spec, and `src/` follows it. The package is not published to npm. The contract will be proposed as a BSIP only after it has been used in production.
+> **Status: experimental.** This README is the spec, and `src/` follows it. The package is published to npm as `@bitsocial/tipping-challenge`. The contract will be proposed as a BSIP only after it has been used in production.
 
 ## What it does
 
@@ -492,14 +492,11 @@ To show a total on a comment, sum the verified tips of its loaded replies, per `
 
 ## Installation
 
-Not yet published to npm. From a clone:
-
 ```bash
-npm install
-npm run build
+npm install @bitsocial/tipping-challenge
 ```
 
-Then register the built package with your node the way your pkc-js setup loads challenge packages.
+Then register the package with your node the way your pkc-js setup loads challenge packages. To build from a clone instead, run `npm install` and `npm run build`.
 
 ## Configuration
 
