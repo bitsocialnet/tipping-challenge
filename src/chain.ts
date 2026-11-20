@@ -110,9 +110,27 @@ type TransportFactory = (args: { chainId: number; urls: string[] }) => Transport
 // The URL schemes an rpcUrls entry may use. validateChallengeSettings rejects anything else.
 export const RPC_URL_PROTOCOLS: readonly string[] = ["http:", "https:", "ws:", "wss:"];
 
-const isWebSocketUrl = (url: string): boolean => /^wss?:/i.test(url);
+// The scheme is read from the parsed URL, as validateChallengeSettings reads it, so the two cannot
+// disagree: URL parsing lowercases the scheme and drops tabs and newlines, which a match on the raw
+// string would not.
+const isWebSocketUrl = (url: string): boolean => {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === "ws:" || protocol === "wss:";
+  } catch {
+    return false;
+  }
+};
 
-const transportForUrl = (url: string): Transport => (isWebSocketUrl(url) ? webSocket(url) : http(url));
+// viem gives up on a dropped socket after 5 reconnect attempts by default and keeps handing out the dead
+// socket afterwards, so an outage of a few seconds would stop tips until the node restarts. Retrying
+// without limit lets the endpoint recover on its own. viem logs every failed attempt, so they are spaced
+// out.
+const WEBSOCKET_RECONNECT = { attempts: Number.POSITIVE_INFINITY, delay: 10_000 };
+
+// Exported for tests only. Not re-exported from index.ts.
+export const transportForUrl = (url: string): Transport =>
+  isWebSocketUrl(url) ? webSocket(url, { reconnect: WEBSOCKET_RECONNECT }) : http(url);
 
 const defaultTransportFactory: TransportFactory = ({ urls }) =>
   urls.length === 0
@@ -124,8 +142,7 @@ const defaultTransportFactory: TransportFactory = ({ urls }) =>
 let transportFactory: TransportFactory = defaultTransportFactory;
 
 // Clients are cached per (chain ID, urls): fallback(..., { rank: true }) starts a background interval
-// that is never torn down and webSocket() holds a socket open, so building a client per request would
-// leak a timer or a connection per publish.
+// that is never torn down, so building a client per request would leak a timer per publish.
 const clientCache = new Map<string, PublicClient>();
 
 // Clients whose RPC has reported the chain ID they were built for. Only a confirmation is remembered: a

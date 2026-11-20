@@ -355,6 +355,8 @@ Add the challenge to the community's `settings.challenges`. Option values are st
 { "1": "https://a.example,wss://b.example", "8453": "https://c.example" }
 ```
 
+A WebSocket connection that drops is reopened every 10 seconds until the endpoint answers again, so an outage does not need a node restart.
+
 A plain comma-separated list of URLs is also accepted, but only when every token entry uses the same single chain ID.
 
 Every endpoint must report the chain ID it is listed under. The node checks this before it verifies a tip and rejects the tip if the RPC is on another chain. With several URLs for one chain ID the node cannot tell which one answered, so list only endpoints for that chain.
