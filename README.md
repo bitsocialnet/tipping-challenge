@@ -357,6 +357,8 @@ await walletClient.sendTransaction({
 });
 ```
 
+  This package exports the same bytes as `getParentBindingSuffix(parentCid)`, and `hasParentBinding(input, parentCid)` to check a transaction's `input` the way the community node does.
+
 - **Send every transaction from one of the user's proven wallets.** Do not hand it to a relayer, a paymaster or an ERC-4337 bundler: [the tipper must be the sender](#who-sends-the-transaction). The wallet therefore needs native coin for gas.
 - **Simulate the tip and the fee transaction before sending either** (`eth_estimateGas` or `eth_call`, with the suffix in place). A receiver with code, or a token contract that rejects trailing calldata, makes the transaction revert, and simulating shows that before any money moves.
 - **Check that the balance covers both.** Each simulation runs against the balance as it is now, so two that pass separately can still fail in sequence. Before sending, check that the wallet holds the tip plus the fee, and native coin for the gas of both.

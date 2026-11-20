@@ -2,7 +2,7 @@
 // Nothing in this file touches the network or pkc-js, so a client can import it without pulling in the
 // challenge itself.
 
-import { isAddress } from "viem";
+import { concatHex, isAddress, keccak256, stringToHex, type Hex } from "viem";
 
 export const TIPPING_V1_TOKENS_OPTION = "tipping/v1/tokens";
 export const TIPPING_V1_FEE_RECIPIENT_OPTION = "tipping/v1/feeRecipient";
@@ -11,6 +11,35 @@ export const WALLET_DOMAIN_SEPARATOR = "bitsocial-author-wallet";
 export const WALLET_SIGNATURE_TYPE = "eip191";
 
 export const MAX_TOKENS = 64;
+
+// The parent binding: a fixed 65-byte ERC-8021 schema-2 suffix that every claimed transaction, tip or
+// fee, must end with. Its CBOR map holds one metadata entry, m["bso-tip"], with the 32 raw bytes of
+// keccak256(parentCid). See "The parent binding" in the README for the layout and a test vector.
+export const PARENT_BINDING_KEY = "bso-tip";
+export const PARENT_BINDING_SUFFIX_BYTES = 65;
+
+// a1 61 6d: CBOR map with 1 entry, the key "m". a1 67: CBOR map with 1 entry, a 7-byte text key.
+const PARENT_BINDING_HEAD: Hex = "0xa1616da167";
+// 58 20: CBOR byte string of 32 bytes, written before the hash.
+const PARENT_BINDING_HASH_HEADER: Hex = "0x5820";
+// 00 2e: the CBOR data is 46 bytes long. 02: ERC-8021 schema ID. Then the 16-byte ERC-8021 marker.
+const PARENT_BINDING_TAIL: Hex = `0x002e02${"8021".repeat(8)}`;
+
+// The suffix a transaction must end with to back a tip on the comment `parentCid`. The string is hashed
+// exactly as it appears in the reply's `parentCid`: it is never parsed or re-encoded.
+export const getParentBindingSuffix = (parentCid: string): Hex =>
+  concatHex([
+    PARENT_BINDING_HEAD,
+    stringToHex(PARENT_BINDING_KEY),
+    PARENT_BINDING_HASH_HEADER,
+    keccak256(stringToHex(parentCid)),
+    PARENT_BINDING_TAIL
+  ]);
+
+// True when `input`, a transaction's calldata as 0x hex, ends with the suffix for `parentCid`. Nothing
+// may follow the suffix. No CBOR is decoded: the suffix has one fixed shape, so the bytes are compared.
+export const hasParentBinding = (input: string, parentCid: string): boolean =>
+  input.toLowerCase().endsWith(getParentBindingSuffix(parentCid).slice(2));
 
 export type TipTokenType = "native" | "erc20" | "erc721";
 

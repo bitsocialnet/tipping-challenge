@@ -191,11 +191,13 @@ export interface TokenTransfer {
 export interface MinedTransaction {
   hash: string;
   succeeded: boolean;
-  blockTimestamp: bigint;
+  // The account that sent the transaction and signed its input.
   from: Address;
   to: Address | null;
-  // Native coin sent by the transaction itself. Only read when asked for, since it costs a third request.
-  value: bigint | undefined;
+  // Native coin sent by the transaction itself.
+  value: bigint;
+  // The transaction's calldata. The parent binding is read from its end.
+  input: Hex;
   transfers: TokenTransfer[];
 }
 
@@ -238,12 +240,10 @@ const decodeTransfers = (
 // not mined yet. Any other RPC failure throws. `client` must come from getConfirmedChainClient.
 export const readTransaction = async ({
   client,
-  hash,
-  withValue
+  hash
 }: {
   client: PublicClient;
   hash: string;
-  withValue: boolean;
 }): Promise<MinedTransaction | undefined> => {
   let receipt: Awaited<ReturnType<PublicClient["getTransactionReceipt"]>>;
   try {
@@ -253,25 +253,23 @@ export const readTransaction = async ({
     throw e;
   }
 
-  const block = await client.getBlock({ blockNumber: receipt.blockNumber });
-
-  let value: bigint | undefined;
-  if (withValue) {
-    try {
-      value = (await client.getTransaction({ hash: hash as Hex })).value;
-    } catch (e) {
-      if (e instanceof TransactionNotFoundError) return undefined;
-      throw e;
-    }
+  // The receipt has no calldata, and the parent binding is read from it, so the transaction is always
+  // fetched too.
+  let transaction: Awaited<ReturnType<PublicClient["getTransaction"]>>;
+  try {
+    transaction = await client.getTransaction({ hash: hash as Hex });
+  } catch (e) {
+    if (e instanceof TransactionNotFoundError) return undefined;
+    throw e;
   }
 
   return {
     hash,
     succeeded: receipt.status === "success",
-    blockTimestamp: block.timestamp,
     from: getAddress(receipt.from),
     to: receipt.to ? getAddress(receipt.to) : null,
-    value,
+    value: transaction.value,
+    input: transaction.input,
     transfers: decodeTransfers(receipt.logs)
   };
 };

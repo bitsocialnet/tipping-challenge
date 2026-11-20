@@ -3,8 +3,11 @@ import { getAddress, recoverMessageAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   getKeyAddressFromPublicKey,
+  getParentBindingSuffix,
   getRequiredFee,
   getWalletMessageToSign,
+  hasParentBinding,
+  PARENT_BINDING_SUFFIX_BYTES,
   parseTipClaim,
   parseTipTokens,
   type TipToken
@@ -377,5 +380,31 @@ describe("verifyWalletProof, BSIP test vector", () => {
     }
     // and signing the right string with that key reproduces the vector's signature exactly
     expect(await wallet.signMessage({ message: getWalletMessageToSign(KEY_ADDRESS, TIMESTAMP) })).toBe(SIGNATURE);
+  });
+});
+
+describe("the parent binding", () => {
+  // The test vector in the README.
+  const parentCid = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+  const suffix =
+    "0xa1616da16762736f2d74697058209e70d347eb27e5edfa2b03409b020ecdaba0997a7a4806a5c441694ea6bf9b5d002e0280218021802180218021802180218021";
+
+  it("builds the suffix of the README's test vector", () => {
+    expect(getParentBindingSuffix(parentCid)).toBe(suffix);
+    expect((suffix.length - 2) / 2).toBe(PARENT_BINDING_SUFFIX_BYTES);
+  });
+
+  it("hashes the string as written", () => {
+    expect(getParentBindingSuffix(parentCid.toLowerCase())).not.toBe(suffix);
+    expect(getParentBindingSuffix(` ${parentCid}`)).not.toBe(suffix);
+  });
+
+  it("finds the suffix only at the very end of the input", () => {
+    expect(hasParentBinding(suffix, parentCid)).toBe(true);
+    expect(hasParentBinding(`0xa9059cbb${suffix.slice(2)}`, parentCid)).toBe(true);
+    expect(hasParentBinding(`${suffix}00`, parentCid)).toBe(false);
+    expect(hasParentBinding(`0x${suffix.slice(4)}`, parentCid)).toBe(false);
+    expect(hasParentBinding("0x", parentCid)).toBe(false);
+    expect(hasParentBinding(suffix, "QmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR")).toBe(false);
   });
 });
