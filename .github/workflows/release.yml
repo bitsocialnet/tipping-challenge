@@ -29,17 +29,22 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      # Release only the commit whose CI passed. If master moved on, the CI run of the
-      # newer commit triggers its own release.
+      # Release only code whose CI passed. master may be ahead of the tested commit, but
+      # only by commits that touch nothing CI watches (docs, for example), because those
+      # start no CI run of their own. A release commit on top (a re-run after a failed
+      # publish) is ignored too. Keep the paths in sync with ci.yml.
       - name: Check master is the tested commit
         id: tip
         env:
           TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          if [ "$(git rev-parse HEAD)" = "$TESTED_SHA" ]; then
+          BASE=HEAD
+          if git log -1 --format=%s HEAD | grep -q '^chore(release): '; then BASE=HEAD~1; fi
+          if git merge-base --is-ancestor "$TESTED_SHA" "$BASE" \
+             && git diff --quiet "$TESTED_SHA" "$BASE" -- package.json package-lock.json tsconfig.json tsconfig.build.json vitest.config.ts src test .github; then
             echo "current=true" >> $GITHUB_OUTPUT
           else
-            echo "master moved past $TESTED_SHA; skipping, a later CI run will release"
+            echo "master has untested changes past $TESTED_SHA; skipping, their CI run will release"
             echo "current=false" >> $GITHUB_OUTPUT
           fi
 
@@ -60,11 +65,6 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
 
-      - name: Get current version
-        if: steps.tip.outputs.current == 'true'
-        id: before
-        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
-
       # No `|| true`: if release-it fails after bumping, nothing must be published.
       # "No commits since the last tag" exits 0 (git.requireCommitsFail is false).
       - name: Run release-it
@@ -73,19 +73,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run release -- --ci
 
-      - name: Check if released
+      # Publish whenever package.json's version is not on npm yet, not only when this run
+      # bumped it. If a publish failed after release-it pushed the tag, a re-run recovers.
+      - name: Check if the version is on npm
         if: steps.tip.outputs.current == 'true'
-        id: release
+        id: npm
         run: |
-          AFTER=$(node -p "require('./package.json').version")
-          if [ "${{ steps.before.outputs.version }}" != "$AFTER" ]; then
-            echo "Released v$AFTER"
-            echo "released=true" >> $GITHUB_OUTPUT
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "$NAME@$VERSION is already on npm"
+            echo "publish=false" >> $GITHUB_OUTPUT
           else
-            echo "No new version to release"
-            echo "released=false" >> $GITHUB_OUTPUT
+            echo "$NAME@$VERSION is not on npm yet"
+            echo "publish=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Publish to npm
-        if: steps.tip.outputs.current == 'true' && steps.release.outputs.released == 'true'
+        if: steps.tip.outputs.current == 'true' && steps.npm.outputs.publish == 'true'
         run: npx --yes npm@latest publish --access public --provenance
