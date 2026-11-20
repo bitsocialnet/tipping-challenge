@@ -10,9 +10,11 @@ import type {
 import {
   getKeyAddressFromPublicKey,
   getRequiredFee,
+  hasParentBinding,
   isConfigAddress,
   parseTipClaimAnswer,
   parseTipTokens,
+  TIPPING_V1_CONTRACT,
   TIPPING_V1_FEE_RECIPIENT_OPTION,
   TIPPING_V1_TOKENS_OPTION,
   tokensHaveFee,
@@ -282,7 +284,6 @@ const findTip = ({
   const native = tokens.find((token) => token.type === "native");
   if (
     native &&
-    tx.value !== undefined &&
     tx.value > 0n &&
     tx.to !== null &&
     includesAddress(senders, tx.from) &&
@@ -431,7 +432,7 @@ const getChallenge = async ({
     return fail(`Could not confirm the RPC for chain ID ${claim.chainId}: ${describeRpcError(e)}`);
   }
 
-  const nativeAccepted = tokens.some((token) => token.type === "native");
+  const parentCid = comment.parentCid;
 
   // Reads a transaction and applies the checks every claimed transaction must pass, tip or fee.
   const readClaimedTransaction = async (
@@ -440,7 +441,7 @@ const getChallenge = async ({
   ): Promise<{ tx: MinedTransaction } | { error: string }> => {
     let tx: MinedTransaction | undefined;
     try {
-      tx = await readTransaction({ client, hash, withValue: nativeAccepted });
+      tx = await readTransaction({ client, hash });
     } catch (e) {
       return { error: `Could not read the ${label} transaction from the chain: ${describeRpcError(e)}` };
     }
@@ -450,8 +451,17 @@ const getChallenge = async ({
     if (!tx.succeeded) {
       return { error: `The ${label} transaction failed on chain.` };
     }
-    if (tx.blockTimestamp < BigInt(parent.timestamp)) {
-      return { error: `The ${label} transaction is older than the comment being tipped.` };
+    // The sender signs the transaction's input, so only a transaction the tipper sent carries a parent
+    // binding the tipper chose. A relayer or a bundler could append any suffix.
+    if (!includesAddress(senders, tx.from)) {
+      return {
+        error: `The ${label} transaction was not sent by one of your proven wallets. A transaction submitted by a relayer, a paymaster or a bundler cannot back a tip.`
+      };
+    }
+    if (!hasParentBinding(tx.input, parentCid)) {
+      return {
+        error: `The ${label} transaction does not end with the parent binding for the comment being tipped. It was made for another comment, or was not made as a tip.`
+      };
     }
     return { tx };
   };
@@ -472,6 +482,7 @@ const getChallenge = async ({
   }
 
   const verified: VerifiedTip = {
+    contract: TIPPING_V1_CONTRACT,
     chainId: claim.chainId,
     txHash: claim.txHash,
     type: tip.token.type,
@@ -509,7 +520,7 @@ const getChallenge = async ({
           "This tip owes the community a fee in the native coin, which must be a separate transaction. Send it to the fee recipient and put its hash in feeTxHash."
         );
       }
-      if (feeTx.value !== undefined && includesAddress(senders, feeTx.from) && sameAddress(feeTx.to, feeRecipient)) {
+      if (includesAddress(senders, feeTx.from) && sameAddress(feeTx.to, feeRecipient)) {
         paid = feeTx.value;
       }
     } else {

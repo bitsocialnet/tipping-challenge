@@ -8,12 +8,13 @@ A [pkc-js](https://github.com/pkcprotocol/pkc-js) challenge that lets a communit
 
 An author tips another author by sending them a token directly, wallet to wallet, and then replying to the comment being tipped. The reply is published with the hash of the transaction as a challenge pre-answer. The community node looks the transaction up on chain and, if it really is a transfer from the replier's wallet to the wallet of the author being replied to, accepts the reply and writes the verified amount into that reply's comment update.
 
-There is no tipping contract and no chain of its own. The payment is an ordinary ERC-20 transfer, ERC-721 transfer or native coin send.
+There is no tipping contract and no chain of its own. The payment is an ERC-20 transfer, ERC-721 transfer or native coin send, with a short suffix naming the parent comment appended to its data.
 
-Three things follow from that design:
+Four things follow from that design:
 
 - **The community cannot intercept a tip.** The money moves before the reply is published, straight to the recipient.
 - **The community can hide a tip but cannot fake one.** The verified result includes the transaction hash, so any client can check it against the chain.
+- **A payment is made for one comment.** The transaction carries a suffix naming the parent comment, so it cannot back a tip on another comment or in another community. See [The parent binding](#the-parent-binding).
 - **Replies without a tip are not affected.** The challenge never prompts anyone. It passes everything that carries no tip claim.
 
 ## The `tipping/v1` contract
@@ -106,11 +107,12 @@ For a reply that carries a claim, all of these must hold. Each is a separate rej
 6. The parent comment's author has at least one valid entry in `author.wallets` that the tipper has not also proven as their own.
 7. The RPC the community uses for `chainId` reports that chain ID. See [The chain](#the-chain).
 8. The transaction is mined and succeeded.
-9. The transaction's block is not older than the parent comment's `timestamp`.
-10. The transaction moves an accepted token from one of the tipper's wallets to one of the recipient's wallets. See [Finding the tip](#finding-the-tip).
-11. The amount is at least the token's `minAmount`, if set.
-12. The fee, if the token has one and it does not round down to 0, was paid. See [The fee](#the-fee).
-13. Neither the tip transaction nor the fee transaction has backed another tip on that chain ID in this community.
+9. The transaction was sent by one of the tipper's wallets. See [Who sends the transaction](#who-sends-the-transaction).
+10. The transaction ends with the [parent binding](#the-parent-binding) for this reply's `parentCid`.
+11. The transaction moves an accepted token from one of the tipper's wallets to one of the recipient's wallets. See [Finding the tip](#finding-the-tip).
+12. The amount is at least the token's `minAmount`, if set.
+13. The fee, if the token has one and it does not round down to 0, was paid. See [The fee](#the-fee).
+14. Neither the tip transaction nor the fee transaction has backed another tip on that chain ID in this community.
 
 ### Which wallets count
 
@@ -130,6 +132,67 @@ The same token address, and even the same transaction hash, can exist on two cha
 - If the answer differs, or the RPC cannot be asked, the tip is rejected with a message saying so. No transaction is read.
 - A confirmation is remembered for the life of the process. A failure is not, so it is checked again on the next tip.
 
+### The parent binding
+
+A claim names a transaction, and a plain transfer names no comment. So every transaction a claim names, the tip transaction and the fee transaction if there is one, must **end with a fixed 65-byte suffix** that names the parent comment of the reply. The binding is part of the contract, not an option: a community cannot turn it off, and a client must build its own transaction to produce it.
+
+What it closes:
+
+- A payment cannot back a tip on another comment, in the same community or in another one. A transaction ends with one suffix only, and a comment CID is derived from content that includes the community address.
+- An unrelated payment cannot be claimed as a tip. Only the payer writes the suffix, so a payment that carries a comment's CID was made for that comment. The suffix says nothing about when the comment was published, and no rule compares the block time with the comment's `timestamp`.
+- A community cannot attach a real payment to a parent it was not made for.
+
+**The suffix.** It is an [ERC-8021](https://eip.tools/eip/8021) schema-2 suffix whose CBOR map holds one metadata entry, `m["bso-tip"]`, with the 32 raw bytes of the hash:
+
+```
+hash   = keccak256(UTF-8 bytes of parentCid)
+suffix = a1 61 6d                  CBOR map with 1 entry, the key "m"
+         a1 67 62736f2d746970      CBOR map with 1 entry, the key "bso-tip" (7 bytes of text)
+         58 20 <hash>              CBOR byte string of 32 bytes
+         00 2e                     length of the CBOR data: 46, two bytes
+         02                        ERC-8021 schema ID
+         8021 8021 8021 8021 8021 8021 8021 8021      ERC-8021 marker, 16 bytes
+```
+
+`parentCid` is the string exactly as it appears in the signed reply's `parentCid`. It is hashed as written, never parsed or re-encoded, so a CIDv0 and a CIDv1 of the same content bind differently.
+
+Test vector. The string is only an example input, and need not be a CID that exists:
+
+```
+parentCid = QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG
+hash      = 0x9e70d347eb27e5edfa2b03409b020ecdaba0997a7a4806a5c441694ea6bf9b5d
+suffix    = 0xa1616da16762736f2d74697058209e70d347eb27e5edfa2b03409b020ecdaba0997a7a4806a5c441694ea6bf9b5d002e0280218021802180218021802180218021
+```
+
+**The check.** The community node reads the transaction's `input` and requires its last 65 bytes to equal the suffix built from this reply's `parentCid`. It does not decode CBOR. Nothing may follow the suffix, so a transaction that carries an ERC-8021 builder code after it does not verify, and a builder code cannot be added to the same map. The suffix is valid ERC-8021 schema 2, so ERC-8021 indexers read it.
+
+**Where it goes.**
+
+- **Native coin:** the transaction's `data` is the suffix. A receiver that has code runs that code on a send that carries data, and may revert. A wallet that has delegated to a smart account through EIP-7702 has code too. See [the fee](#the-fee) for what that means for a fee recipient.
+- **ERC-20 and ERC-721:** the normal `transfer` or `transferFrom` calldata, followed by the suffix. Solidity's ABI decoder ignores extra trailing calldata, so the call executes as usual. A token contract that rejects trailing calldata cannot be tipped.
+- **Batched transactions:** the rule is the same: the outer transaction's `input` must end with the suffix, and the tipper must send it. See [Who sends the transaction](#who-sends-the-transaction).
+
+It adds 65 bytes. One is always zero. The other 64 are non-zero, except for any zero byte in the hash (about one hash in eight has one). A zero byte costs less, so the figures below are upper bounds.
+
+- On a token transfer that is at most 1,028 gas. A batch with a lot of calldata can reach the EIP-7623 calldata floor, and the suffix then costs the same as on a native coin send.
+- On a native coin send it is at most 2,570 gas. A plain send has no execution gas, so the EIP-7623 calldata floor applies: 10 gas for each zero byte and 40 for each non-zero byte, on top of the 21,000-gas base cost. This holds on chains that have adopted EIP-7623.
+
+### Who sends the transaction
+
+Every transaction a claim names, tip or fee, must be **sent by one of the tipper's proven wallets**: the transaction's own `from`, not only the `from` of a `Transfer` event inside it.
+
+The reason is the suffix. It sits in the outer transaction's `input`, and only the account that sends a transaction signs its `input`. If anyone could send it, a relayer could append a suffix the tipper never chose. With this rule the tipper's own key has signed the binding.
+
+What this excludes:
+
+- **Sponsored and relayed transactions**, where another account pays the gas and submits the transaction.
+- **ERC-4337 user operations.** The outer transaction is the bundler's `handleOps` call. The bundler sends it, and it does not end with the suffix.
+- **EIP-5792 `wallet_sendCalls`**, when the wallet behind it submits through a bundler or a relayer, or does not append the suffix.
+
+What still works: a transaction the tipper's wallet sends itself, including an EIP-7702 batch the tipper sends to their own account, as long as the outer `input` ends with the suffix.
+
+This rule is strict on purpose. Accepting any sender later would not invalidate a tip that passes today, so it can be relaxed without breaking anything. The reverse is not true.
+
 ### Finding the tip
 
 The claim does not name a token, so the rule for which transfer is the tip is part of the contract:
@@ -137,7 +200,7 @@ The claim does not name a token, so the rule for which transfer is the tip is pa
 1. If the native coin is accepted on that chain ID, and the transaction itself was sent by one of the tipper's wallets to one of the recipient's wallets with a value above 0, the tip is that value.
 2. Otherwise the tip is the first `Transfer` event in the transaction, in log order, that is emitted by a token contract accepted on that chain ID, goes from one of the tipper's wallets to one of the recipient's wallets, and has the shape of that entry's `type`.
 
-`from` is the sender in the event, not the account that submitted the transaction. An ERC-20 or ERC-721 tip sent through a batching or smart account therefore verifies normally.
+`from` in rule 2 is the sender in the event. It need not be the wallet that sent the transaction, but both must be wallets of the tipper: [the tipper sends every claimed transaction](#who-sends-the-transaction). So a tipper with two proven wallets can move a token out of one with a `transferFrom` sent by the other. A tip submitted by a relayer, a bundler or any other account does not verify.
 
 An ERC-20 `Transfer` has two indexed arguments and the amount in the data. An ERC-721 `Transfer` has three indexed arguments, the last being the token ID. An event of one shape on an entry of the other type is ignored.
 
@@ -152,9 +215,13 @@ The fee is a second transfer, on the same chain ID, from any of the tipper's val
 | An ERC-20 | A `Transfer` event of that token from one of the tipper's wallets to the fee recipient, in `feeTxHash` if given, else in `txHash`. It must be a different event from the tip itself |
 | The native coin | `feeTxHash` must be given and must differ from `txHash`. That transaction must be sent by one of the tipper's wallets to the fee recipient with a value of at least the fee |
 
-So an ERC-20 or ERC-721 tip can carry its fee in the same transaction when the wallet can batch, or in a separate one when it cannot. A native coin fee is always its own transaction.
+So an ERC-20 or ERC-721 tip can carry its fee in the same transaction only when the client builds a batch itself and the tipper's wallet sends it. Otherwise the fee is a separate transaction. A native coin fee is always its own transaction.
 
-The fee transaction must pass the same checks as the tip transaction: mined, succeeded, and not older than the parent comment.
+The fee transaction must pass the same checks as the tip transaction: mined, succeeded, [sent by one of the tipper's wallets](#who-sends-the-transaction), and ending with the [parent binding](#the-parent-binding).
+
+When no fee is owed, a `feeTxHash` in the claim is ignored: the transaction is not read, not checked and not marked as used. A client that rounds a percentage fee up may pay a fee the community rounds down to 0, and that tip still verifies.
+
+**A native fee recipient must accept a send that carries data.** The fee transaction's `data` is the suffix. An address with no code accepts it. An address with code runs that code and may revert, and then nobody can pay that community's native fee. That covers a contract, such as a multisig treasury, and also an ordinary wallet that has delegated to a smart account through EIP-7702. A community that charges a fee in the native coin sets `tipping/v1/feeRecipient` to a wallet with no code, or to a contract or delegate known to accept a send that carries data. The node cannot check this when settings are saved, and a delegation added later can break native fees that worked before. An ERC-20 fee is not affected: that call goes to the token contract.
 
 Without a contract the fee is enforced by display only. The recipient keeps the tip either way; the community just does not show a tip that skipped the fee.
 
@@ -164,6 +231,7 @@ On success the challenge writes this into the reply's comment update:
 
 ```js
 commentUpdate.tip = {
+  contract: "tipping/v1", // the contract, with its version, that the tip was verified under
   chainId: 1,
   txHash: "0x…",
   type: "erc20",          // "native" | "erc20" | "erc721"
@@ -183,46 +251,59 @@ commentUpdate.tip = {
 
 Addresses are written with their EIP-55 checksum. Hashes are lowercase.
 
+`contract` names the rules, not the software: any implementation of this contract writes `"tipping/v1"`. A community can move to a later version while its older comment updates still hold tips verified under this one, so a client that checks a tip itself reads `contract` to know which rules to apply, and treats a value it does not know as a tip it cannot check.
+
 It lives in the comment update, not in the comment, so a community that later stops showing tips can drop it. The reply itself, with its claim, is permanent.
 
 ### Wallet proofs
 
 A tip is only meaningful if both wallets really belong to the two authors. pkc-js checks only the shape of `author.wallets`, so this challenge verifies each proof itself.
 
-The rules follow the [Author Wallet Proofs BSIP draft](https://github.com/bitsocialnet/BSIPs/issues/26). An entry is `{ address, timestamp, signature: { signature, type } }`. It is valid when:
+The rules are those of [BSIP-22, Author Wallet Proofs](https://github.com/bitsocialnet/BSIPs/blob/master/BSIPS/bsip-22.md). An entry is `{ address, timestamp, signature: { signature, type } }`. Verifying it has one of three outcomes: valid, invalid or unknown.
+
+First, whatever its type, the entry must have the right shape: `address` is a string, `timestamp` is an integer, and `signature` is an object whose `signature` and `type` are strings. An entry without this shape is **invalid**. Other members are ignored.
+
+Then, when `signature.type` is any string other than `eip191`, the entry is **unknown**: no further rule applies to it, and it is neither valid nor invalid.
+
+An `eip191` entry is **valid** when all of these hold, and **invalid** otherwise:
 
 - `address` is a literal `0x` address (40 hex digits, any letter case), not a name.
-- `signature.type` is `eip191`.
-- `timestamp` is an integer and is not more than 300 seconds later than the verifier's clock. The allowance is fixed.
+- `timestamp` is not negative and is not more than 300 seconds later than the verifier's clock. The allowance is fixed.
 - `signature.signature` is 65 bytes, `r || s || v`, written as `0x` followed by 130 hex digits, where:
   - `v`, the last byte, is `0x1b` or `0x1c` (27 or 28). The `0`/`1` form is rejected. A client whose signer returns `0` or `1` adds 27 before storing the signature.
   - `s` is in the lower half of the curve order: `s <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0`. The high-`s` form of the same signature recovers the same address and is rejected anyway, so every proof has one accepted encoding.
 - the address recovered from that signature, as an EIP-191 personal message over exactly this string, equals `address`:
 
 ```
-{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"<key address>","timestamp":<timestamp>}
+{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"<key address>","walletAddress":"<wallet address>","timestamp":<timestamp>}
 ```
 
-`authorPublicKey` is the **key address** of the author's signing key: the `12D3KooW…` form derived from `signature.publicKey`. It is never `author.address`, which is `author.name || keyAddress` and follows a name when the name is repointed. The field order is fixed and there is no whitespace.
+`authorPublicKey` is the **key address** of the author's signing key: the `12D3KooW…` form derived from `signature.publicKey`. It is never `author.address`, which is `author.name || keyAddress` and follows a name when the name is repointed.
+
+`walletAddress` is the entry's `address` with its hex digits in **lowercase**, whatever case the entry uses. The wallet signs its own address, so nobody can make up 65 bytes first and list whatever address they recover to.
+
+The field order is fixed and there is no whitespace.
+
+Only a valid entry is a proven wallet. An invalid or unknown entry is skipped: it can neither pay a tip nor receive one, and it does not stop the author's other entries from counting. BSIP-22 also asks community nodes to reject any publication that carries an invalid entry. That is the node's rule, not this challenge's; once pkc-js applies it, the check here becomes a second line of defence.
 
 Verification is stateless. There is no "newest timestamp wins" rule, and no RPC is needed. Signatures from contract accounts (ERC-1271) are not `eip191` proofs and do not verify.
 
-The `v` and `s` rules are checked before recovery, because recovery libraries (viem included) accept the other forms. The BSIP draft's test vector is part of this package's tests.
+The `v` and `s` rules are checked before recovery, because recovery libraries (viem included) accept the other forms. BSIP-22's test vectors are part of this package's tests.
 
-Proofs signed with the older `pkc-author-wallet` or `plebbit-author-wallet` strings, or over `author.address`, do not verify. Authors re-sign.
-
-The BSIP is still a draft, so these rules can change with it. It asks community nodes to verify wallet proofs on acceptance; once pkc-js does, the check here becomes a second line of defence.
+Proofs signed with the earlier draft string that does not name `walletAddress`, with the older `pkc-author-wallet` or `plebbit-author-wallet` strings, or over `author.address`, do not verify. Authors re-sign.
 
 ## Future work
 
 - **Let a verified tip skip the community's other challenges.** A community could treat a tip that passes this challenge as proof of effort and excuse that author from its other challenges (a captcha, a question) for that reply. pkc-js has no way for one challenge to excuse the others today, so this needs support there first. It must stay opt-in per community, since a tip proves a payment and not good behaviour.
+- **Tipping through a separate connected wallet.** v1 assumes a wallet inside the client. A later version could support a client that builds the transaction, with the parent binding in its data, and hands it to a connected wallet such as MetaMask to sign and send. That needs checking which wallets pass the data through unchanged, and how they treat a send that carries data.
 
 ## Known gaps
 
-- **One transaction can be claimed once in each community.** A plain transfer names no comment, so the same payment can back a tip reply in community A and another in community B, as long as the recipient has a comment in both. Only a tipping contract that records the tipped comment would close this.
-- **An old payment after the comment was posted.** The freshness rule only rejects transactions older than the tipped comment. A real, unrelated payment made to the same author after that comment was posted can be claimed as a tip on it, once.
-- **The tipper no longer signs which reply a payment is for.** The claim travels in the publish request, not in the signed comment, so a community could attach a real payment to a different reply by the same tipper. It still cannot invent a payment: the verified result names the transaction, and the transfer must run between the two authors' proven wallets.
-- **Comment timestamps are chosen by authors.** The freshness rule compares a block time with the parent comment's own `timestamp`.
+- **The tipper does not sign which reply a payment is for.** The [parent binding](#the-parent-binding) names the parent comment, not the reply. The claim travels in the publish request, not in the signed comment, so a community could attach a real payment to a different reply by the same tipper to the same parent. One transaction still backs one reply, and the community cannot invent a payment: the verified result names the transaction, and the transfer must run between the two authors' proven wallets.
+- **Collusion between a community owner and an author is not prevented.** Both can embed the parent CID. A colluding owner can tip itself in a loop: the owner receives the fee, so it pays the fee to itself. A second key and wallet pass every check, and the owner can accept a worthless token it minted. The cost is gas only. This is a non-goal of the challenge. Defences belong in clients: weight a tip by value, count recognised tokens only, and discount A→B→A loops.
+- **Tipping is designed for a wallet inside the client.** The parent binding needs a suffix that a wallet's own send screen will not add, so a plain wallet app, an exchange withdrawal or a contract wallet cannot produce a verifiable tip. `tipping/v1` assumes the client holds the tipping wallet's key itself: the user funds that wallet from another one, and the client builds and sends every tip. Sending through a separate connected wallet, such as MetaMask, is out of scope for v1. No rule rejects such a transaction when the wallet sends the data unchanged, but that path is not designed for or tested. See [Future work](#future-work).
+- **No sponsored gas.** [The tipper sends every claimed transaction](#who-sends-the-transaction), so the tipper's wallet needs the chain's native coin for gas, even for an ERC-20 or ERC-721 tip. Relayers, paymasters and ERC-4337 bundlers cannot submit a tip.
+- **A tip payment is recognisable on chain.** The suffix marks the transaction as a tip, whether or not the community shows it. Anyone who holds a comment's CID can hash it and match the payment to that comment, even when the reply was rejected or the tip is hidden.
 - **Communities that hide authors.** The recipient's wallet proof is checked against the signing key stored with the parent comment. A community that replaces author identities (pseudonymity) may store a different key there, in which case tips are rejected. This combination has not been tested.
 - **Excluded authors.** An author excused from this challenge by an `exclude` rule skips verification. No verified result is written for their reply, so a tip they paid does not show.
 
@@ -247,13 +328,67 @@ function getTippingConfig(community) {
 }
 ```
 
-Never look at which package produced the options. The record does not say, and you do not need it. If you bundle npm packages, `parseTipTokens` from this package validates the list exactly as the community node does.
+Never look at which package produced the options. The record does not say, and you do not need it. The community node refuses to save a list that breaks the [token list](#the-token-list) rules, so a client reads the entries as they are.
 
 Chains are named by `chainId` only. Offer a tip only when the comment's author has at least one valid `author.wallets` entry, and the user has one too.
 
 ### 2. Pick the recipient's wallet, and verify it before sending money
 
-The community verifies the recipient's wallet proof, but it does so after the money has moved. Verify it yourself first, with the [wallet proof](#wallet-proofs) rules, so a user never pays an address the author does not control. `verifyWalletProof` and `getKeyAddressFromPublicKey` are exported from this package.
+The community verifies the recipient's wallet proof, but it does so after the money has moved. Verify it yourself first, with the [wallet proof](#wallet-proofs) rules, so a user never pays an address the author does not control. For example with viem:
+
+```js
+import { verifyMessage } from "viem";
+
+// Half the secp256k1 curve order: s must not be above it.
+const HALF_ORDER = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n;
+
+// The exact string the wallet signs. The wallet address goes in lowercase.
+const getWalletMessageToSign = (authorKeyAddress, walletAddress, timestamp) =>
+  `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"${authorKeyAddress}","walletAddress":"${walletAddress.toLowerCase()}","timestamp":${timestamp}}`;
+
+// Returns "valid", "invalid" or "unknown". Only "valid" is a wallet you may send to.
+// authorKeyAddress is the key address of the signature.publicKey that signed the comment.
+async function verifyWalletEntry(entry, authorKeyAddress, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const proof = entry?.signature;
+  if (typeof entry?.address !== "string" || !Number.isInteger(entry.timestamp)) return "invalid";
+  if (typeof proof?.signature !== "string" || typeof proof.type !== "string") return "invalid";
+  if (proof.type !== "eip191") return "unknown";
+
+  if (!/^0x[0-9a-fA-F]{40}$/.test(entry.address)) return "invalid";
+  if (entry.timestamp < 0 || entry.timestamp > nowSeconds + 300) return "invalid";
+
+  // viem accepts a v of 0 or 1 and a high s. The rules do not, so check both before recovering.
+  if (!/^0x[0-9a-fA-F]{130}$/.test(proof.signature)) return "invalid";
+  const v = parseInt(proof.signature.slice(130, 132), 16);
+  const s = BigInt(`0x${proof.signature.slice(66, 130)}`);
+  if ((v !== 27 && v !== 28) || s === 0n || s > HALF_ORDER) return "invalid";
+
+  try {
+    const signedByWallet = await verifyMessage({
+      address: entry.address,
+      message: getWalletMessageToSign(authorKeyAddress, entry.address, entry.timestamp),
+      signature: proof.signature
+    });
+    return signedByWallet ? "valid" : "invalid";
+  } catch {
+    return "invalid";
+  }
+}
+```
+
+`authorKeyAddress` is the `12D3KooW…` key address of the comment's `signature.publicKey`, as [BSIP-10](https://github.com/bitsocialnet/BSIPs/blob/master/BSIPS/bsip-10.md#key-addresses) derives it. Do not pass `author.address` or `author.name`. Verify the comment's own signature first: a wallet entry says nothing in a comment whose signature is not valid.
+
+The user's own entry is made the same way. The wallet signs that string as a personal message, and the client stores the result:
+
+```js
+const timestamp = Math.floor(Date.now() / 1000);
+const signature = await walletClient.signMessage({
+  message: getWalletMessageToSign(userKeyAddress, walletClient.account.address, timestamp)
+});
+const entry = { address: walletClient.account.address, timestamp, signature: { signature, type: "eip191" } };
+```
+
+viem signs with a `v` of 27 or 28 and a low `s`. A signer that returns a `v` of 0 or 1 needs 27 added before the signature is stored.
 
 The keys of `author.wallets` do not select a chain, so every client must pick the same entry by the same rule:
 
@@ -268,11 +403,53 @@ If no entry is valid, do not offer a tip.
 
 Send the token from a wallet the user has a valid `author.wallets` entry for, to the recipient wallet picked above. If the token has a fee, also send the fee, on the same chain ID, from any of the user's valid wallets to `tipping/v1/feeRecipient`.
 
-- Compute a percentage fee and round **up** if you want to be safe. The community requires at least the rounded-down amount.
-- If the wallet can batch (EIP-7702 or EIP-5792), put an ERC-20 fee in the same transaction as the tip. Otherwise send it separately and put its hash in `feeTxHash`.
-- A native coin tip and a native coin fee are always two direct sends.
+- Compute the fee with integers only. A float can round to one unit less than the community requires, and then the tip is not shown:
 
-How the transaction is produced is outside this contract.
+```js
+// The fee owed for a tip of `amount` (a bigint, in the token's smallest unit) under one token entry.
+// It is paid in the tipped token, except for an erc721 entry, where it is paid in fee.token.
+function getOwedFee(token, amount) {
+  const fee = token.fee;
+  if (!fee) return 0n;
+  if (fee.amount !== undefined) return BigInt(fee.amount);
+  const [whole, fraction = ""] = fee.percent.split(".");
+  const scaled = BigInt(whole + fraction.padEnd(4, "0")); // "2.5" becomes 25000
+  return (amount * scaled) / 1_000_000n; // rounds down, as the community does
+}
+```
+
+  This is the least the community accepts, and paying more is allowed. When it is `0n`, no fee is owed and no fee transaction is needed.
+- **End every transaction with the [parent binding](#the-parent-binding)**, built from the `cid` of the comment being tipped. Both the tip transaction and the fee transaction need it. A wallet's own send screen will not add it, so the client builds and sends the transaction itself, from the wallet it holds for the user. For example with viem:
+
+```js
+import { concatHex, encodeFunctionData, erc20Abi, keccak256, stringToHex } from "viem";
+
+// parentCid is the string exactly as it will appear in the reply's parentCid
+const suffix = concatHex([
+  "0xa1616da167", stringToHex("bso-tip"), "0x5820", keccak256(stringToHex(parentCid)),
+  "0x002e02", `0x${"8021".repeat(8)}`
+]);
+
+// native coin: the suffix is the data
+await walletClient.sendTransaction({ to: recipient, value: amount, data: suffix });
+
+// ERC-20: the transfer calldata, then the suffix
+await walletClient.sendTransaction({
+  to: tokenAddress,
+  data: concatHex([encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [recipient, amount] }), suffix])
+});
+```
+
+  The [parent binding](#the-parent-binding) section has a test vector for these 65 bytes.
+
+- **Send every transaction from one of the user's proven wallets.** Do not hand it to a relayer, a paymaster or an ERC-4337 bundler: [the tipper must be the sender](#who-sends-the-transaction). The wallet therefore needs native coin for gas.
+- **Simulate the tip and the fee transaction before sending either** (`eth_estimateGas` or `eth_call`, with the suffix in place). A receiver with code, or a token contract that rejects trailing calldata, makes the transaction revert, and simulating shows that before any money moves.
+- **Check that the balance covers both.** Each simulation runs against the balance as it is now, so two that pass separately can still fail in sequence. Before sending, check that the wallet holds the tip plus the fee, and native coin for the gas of both.
+- **Send the fee first, and wait until it is mined and succeeded before sending the tip.** For a token fee, also check that the receipt holds the fee `Transfer`: some tokens return `false` instead of reverting, so the transaction succeeds and nothing moves. If the fee fails, the tip has not been sent. Simulation is a check, not a guarantee: the chain can change between the simulation and the send.
+- **A failed fee can be sent again.** The tip is not lost for display as long as the fee is paid before publishing: send a new fee transaction, ending with the same suffix, and put its hash in `feeTxHash`.
+- A fee in the same transaction as the tip needs a batch that the client builds itself and the user's wallet sends, and the outer call must still end with the suffix. Otherwise send the fee as its own transaction, ending with the suffix, and put its hash in `feeTxHash`.
+- A native coin tip and a native coin fee are always two direct sends.
+- Do not append anything after the suffix, such as an ERC-8021 builder code.
 
 ### 4. Wait, then publish
 

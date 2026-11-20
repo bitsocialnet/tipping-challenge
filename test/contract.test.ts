@@ -1,10 +1,14 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { getAddress, recoverMessageAddress } from "viem";
+import { getAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   getKeyAddressFromPublicKey,
+  getParentBindingSuffix,
   getRequiredFee,
   getWalletMessageToSign,
+  hasParentBinding,
+  PARENT_BINDING_SUFFIX_BYTES,
   parseTipClaim,
   parseTipTokens,
   type TipToken
@@ -34,9 +38,9 @@ describe("getKeyAddressFromPublicKey", () => {
 });
 
 describe("getWalletMessageToSign", () => {
-  it("is the exact agreed string", () => {
-    expect(getWalletMessageToSign("12D3KooWabc", 1700000000)).toBe(
-      '{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"12D3KooWabc","timestamp":1700000000}'
+  it("is the exact BSIP-22 string, with the wallet address in lowercase", () => {
+    expect(getWalletMessageToSign("12D3KooWabc", "0x5050A4F4b3f9338C3472dcC01A87C76A144b3c9c", 1700000000)).toBe(
+      '{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"12D3KooWabc","walletAddress":"0x5050a4f4b3f9338c3472dcc01a87c76a144b3c9c","timestamp":1700000000}'
     );
   });
 });
@@ -212,170 +216,170 @@ describe("parseTipClaim", () => {
 describe("verifyWalletProof", () => {
   const author = makeAuthor(1);
   const other = makeAuthor(2);
+  const valid = { outcome: "valid", address: author.wallet.address };
+  const invalid = (error: string | RegExp) => ({
+    outcome: "invalid",
+    error: typeof error === "string" ? error : expect.stringMatching(error)
+  });
 
-  it("accepts a proof over the author's key address", async () => {
+  it("accepts a proof over the author's key address and the wallet's own address", async () => {
     const result = await verifyWalletProof({ wallet: await signWallet(author), authorKeyAddress: author.keyAddress });
-    expect(result).toEqual({ address: author.wallet.address });
+    expect(result).toEqual(valid);
+  });
+
+  it("accepts the entry with its address in lowercase", async () => {
+    const wallet = await signWallet(author, { address: author.wallet.address.toLowerCase() });
+    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual(valid);
   });
 
   it("rejects a missing wallet", async () => {
-    expect(await verifyWalletProof({ wallet: undefined, authorKeyAddress: author.keyAddress })).toEqual({
-      error: "has no wallet for this chain"
-    });
+    expect(await verifyWalletProof({ wallet: undefined, authorKeyAddress: author.keyAddress })).toEqual(
+      invalid("has no wallet for this chain")
+    );
   });
 
   it("rejects a wallet entry copied from another author", async () => {
     const result = await verifyWalletProof({ wallet: await signWallet(other), authorKeyAddress: author.keyAddress });
-    expect(result).toEqual({ error: expect.stringMatching(/does not prove/) });
+    expect(result).toEqual(invalid(/does not prove/));
   });
 
+  const lower = author.wallet.address.toLowerCase();
   it.each([
     ["the old pkc-author-wallet string", (key: string) => `{"domainSeparator":"pkc-author-wallet","authorAddress":"${key}","timestamp":${WALLET_TIMESTAMP}}`],
     ["the old plebbit-author-wallet string", (key: string) => `{"domainSeparator":"plebbit-author-wallet","authorAddress":"${key}","timestamp":${WALLET_TIMESTAMP}}`],
-    ["the right separator with the old authorAddress field", (key: string) => `{"domainSeparator":"bitsocial-author-wallet","authorAddress":"${key}","timestamp":${WALLET_TIMESTAMP}}`],
-    ["a name instead of the key", () => `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"author.bso","timestamp":${WALLET_TIMESTAMP}}`]
+    ["the draft string that does not name the wallet address", (key: string) => `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"${key}","timestamp":${WALLET_TIMESTAMP}}`],
+    ["the wallet address in mixed case", (key: string) => `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"${key}","walletAddress":"${author.wallet.address}","timestamp":${WALLET_TIMESTAMP}}`],
+    ["the right separator with the old authorAddress field", (key: string) => `{"domainSeparator":"bitsocial-author-wallet","authorAddress":"${key}","walletAddress":"${lower}","timestamp":${WALLET_TIMESTAMP}}`],
+    ["a name instead of the key", () => `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"author.bso","walletAddress":"${lower}","timestamp":${WALLET_TIMESTAMP}}`]
   ])("rejects a proof signed over %s", async (_name, message) => {
     const wallet = await signWallet(author, { message: message(author.keyAddress) });
-    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual({
-      error: expect.stringMatching(/does not prove/)
-    });
+    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual(invalid(/does not prove/));
   });
 
-  it("rejects a signature type other than eip191", async () => {
+  it("reports a signature type other than eip191 as unknown, not invalid", async () => {
     const wallet = await signWallet(author, { type: "eip712" });
     expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual({
-      error: expect.stringMatching(/signature type must be "eip191"/)
+      outcome: "unknown",
+      error: expect.stringMatching(/signature type "eip712" is unknown/)
     });
   });
 
   it("rejects a name in place of an address", async () => {
     const wallet = await signWallet(author, { address: "author.eth" });
-    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual({
-      error: expect.stringMatching(/literal 0x address/)
-    });
+    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual(invalid(/literal 0x address/));
   });
 
   it("accepts a timestamp up to 300 seconds ahead of the clock, and rejects one second more", async () => {
     const wallet = await signWallet(author, { timestamp: 2_000 });
-    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress, nowSeconds: 1_699 })).toEqual({
-      error: "wallet timestamp is more than 300 seconds in the future"
-    });
-    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress, nowSeconds: 1_700 })).toEqual({
-      address: author.wallet.address
-    });
-    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress, nowSeconds: 2_000 })).toEqual({
-      address: author.wallet.address
-    });
+    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress, nowSeconds: 1_699 })).toEqual(
+      invalid("wallet timestamp is more than 300 seconds in the future")
+    );
+    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress, nowSeconds: 1_700 })).toEqual(valid);
+    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress, nowSeconds: 2_000 })).toEqual(valid);
   });
 
   it("rejects a non-integer timestamp", async () => {
     const wallet = { ...(await signWallet(author)), timestamp: "1700000000" };
-    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual({
-      error: "wallet timestamp must be an integer"
-    });
+    expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual(
+      invalid("wallet timestamp must be an integer")
+    );
   });
 
-  it("rejects a signature that is not 65 bytes of hex", async () => {
+  it("rejects an eip191 signature that is not 65 bytes of hex", async () => {
     const good = (await signWallet(author)).signature.signature;
-    for (const signature of ["0x1234", good.slice(0, -2), `${good}00`, good.slice(2), `0x${"zz".repeat(65)}`, 5]) {
+    for (const signature of ["0x1234", good.slice(0, -2), `${good}00`, good.slice(2), `0x${"zz".repeat(65)}`]) {
       const wallet = { ...(await signWallet(author)), signature: { signature, type: "eip191" } };
-      expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual({
-        error: expect.stringMatching(/must be 65 bytes/)
-      });
+      expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual(invalid(/must be 65 bytes/));
+    }
+  });
+
+  it("rejects a signature that is not a string, whatever the type", async () => {
+    for (const type of ["eip191", "erc1271"]) {
+      const wallet = { ...(await signWallet(author)), signature: { signature: 5, type } };
+      expect(await verifyWalletProof({ wallet, authorKeyAddress: author.keyAddress })).toEqual(
+        invalid(/string signature and a string type/)
+      );
     }
   });
 });
 
-// The test vector of the "Author Wallet Proofs" BSIP draft.
-describe("verifyWalletProof, BSIP test vector", () => {
-  const SIGNATURE_PUBLIC_KEY = "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w";
-  const KEY_ADDRESS = "12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5";
-  const ADDRESS = "0x5050A4F4b3f9338C3472dcC01A87C76A144b3c9c";
-  const TIMESTAMP = 1_790_000_000;
-  const SIGNATURE =
-    "0x689cdb0da488b458f4deb758ea77c3d205b6d17d690e9ffab497bc44eb9536a25fbc48ce7c3e6cab651efe176f94d856ebbe8fcad920dfece8cb5f0cb355d8ac1c";
-  const CURVE_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+// The test vectors of BSIP-22 (Author Wallet Proofs), copied unchanged from
+// https://github.com/bitsocialnet/BSIPs/blob/b29e043674e4ce9d6dfb7ab11edff2a314f845e1/assets/bsip-22/wallet-proof-vectors.json
+describe("verifyWalletProof, BSIP-22 test vectors", () => {
+  interface VectorCase {
+    name: string;
+    entry: Record<string, unknown>;
+    authorKey?: "other";
+    verifierTime: number;
+    outcome: "valid" | "invalid" | "unknown";
+  }
+  const vectors = JSON.parse(
+    readFileSync(new URL("./fixtures/bsip-22-wallet-proof-vectors.json", import.meta.url), "utf8")
+  ) as {
+    authorKey: { publicKeyBase64Unpadded: string; address: string };
+    otherKey: { publicKeyBase64Unpadded: string; address: string };
+    walletPrivateKeyHex: string;
+    walletAddress: string;
+    timestamp: number;
+    proofMessage: string;
+    validSignature: string;
+    cases: VectorCase[];
+  };
 
-  const entry = (overrides: { signature?: string; type?: string; address?: string } = {}) => ({
-    address: overrides.address ?? ADDRESS,
-    timestamp: TIMESTAMP,
-    signature: { signature: overrides.signature ?? SIGNATURE, type: overrides.type ?? "eip191" }
+  it("has every case of the BSIP", () => {
+    expect(vectors.cases).toHaveLength(26);
   });
 
-  const verify = (wallet: ReturnType<typeof entry>, options: { keyAddress?: string; nowSeconds?: number } = {}) =>
-    verifyWalletProof({
-      wallet,
-      authorKeyAddress: options.keyAddress ?? KEY_ADDRESS,
-      nowSeconds: options.nowSeconds ?? TIMESTAMP
-    });
-
-  it("derives the vector's key address from its signature.publicKey", () => {
-    expect(getKeyAddressFromPublicKey(SIGNATURE_PUBLIC_KEY)).toBe(KEY_ADDRESS);
+  it("derives the vectors' key addresses from their signature.publicKey", () => {
+    expect(getKeyAddressFromPublicKey(vectors.authorKey.publicKeyBase64Unpadded)).toBe(vectors.authorKey.address);
+    expect(getKeyAddressFromPublicKey(vectors.otherKey.publicKeyBase64Unpadded)).toBe(vectors.otherKey.address);
   });
 
-  it("builds the vector's proof message", () => {
-    expect(getWalletMessageToSign(KEY_ADDRESS, TIMESTAMP)).toBe(
-      '{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5","timestamp":1790000000}'
+  it("builds the vector's proof message from the mixed-case address", () => {
+    expect(getWalletMessageToSign(vectors.authorKey.address, vectors.walletAddress, vectors.timestamp)).toBe(
+      vectors.proofMessage
     );
   });
 
-  it("is valid from the timestamp less the 300 second allowance onward", async () => {
-    expect(await verify(entry(), { nowSeconds: 1_789_999_700 })).toEqual({ address: ADDRESS });
-    expect(await verify(entry(), { nowSeconds: TIMESTAMP + 1_000_000 })).toEqual({ address: ADDRESS });
+  it("reproduces the vector's signature when the vector's wallet signs that message", async () => {
+    const wallet = privateKeyToAccount(`0x${vectors.walletPrivateKeyHex}`);
+    expect(wallet.address).toBe(vectors.walletAddress);
+    expect(await wallet.signMessage({ message: vectors.proofMessage })).toBe(vectors.validSignature);
   });
 
-  it("is not valid one second before that", async () => {
-    expect(await verify(entry(), { nowSeconds: 1_789_999_699 })).toEqual({
-      error: "wallet timestamp is more than 300 seconds in the future"
+  it.each(vectors.cases.map((vectorCase) => [vectorCase.name, vectorCase] as const))("%s", async (_name, vectorCase) => {
+    const result = await verifyWalletProof({
+      wallet: vectorCase.entry,
+      authorKeyAddress: vectorCase.authorKey === "other" ? vectors.otherKey.address : vectors.authorKey.address,
+      nowSeconds: vectorCase.verifierTime
     });
+    expect(result.outcome).toBe(vectorCase.outcome);
+    if (result.outcome === "valid") expect(getAddress(result.address)).toBe(vectors.walletAddress);
+  });
+});
+
+describe("the parent binding", () => {
+  // The test vector in the README.
+  const parentCid = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+  const suffix =
+    "0xa1616da16762736f2d74697058209e70d347eb27e5edfa2b03409b020ecdaba0997a7a4806a5c441694ea6bf9b5d002e0280218021802180218021802180218021";
+
+  it("builds the suffix of the README's test vector", () => {
+    expect(getParentBindingSuffix(parentCid)).toBe(suffix);
+    expect((suffix.length - 2) / 2).toBe(PARENT_BINDING_SUFFIX_BYTES);
   });
 
-  it("is not valid in a publication signed by another key", async () => {
-    expect(await verify(entry(), { keyAddress: makeAuthor(9).keyAddress })).toEqual({
-      error: expect.stringMatching(/does not prove/)
-    });
+  it("hashes the string as written", () => {
+    expect(getParentBindingSuffix(parentCid.toLowerCase())).not.toBe(suffix);
+    expect(getParentBindingSuffix(` ${parentCid}`)).not.toBe(suffix);
   });
 
-  it("is not valid with another signature type or a name as the address", async () => {
-    expect(await verify(entry({ type: "erc1271" }))).toEqual({ error: expect.stringMatching(/signature type must be "eip191"/) });
-    expect(await verify(entry({ address: "example.eth" }))).toEqual({ error: expect.stringMatching(/literal 0x address/) });
-  });
-
-  it.each([
-    ["0x00", "00"],
-    ["0x01", "01"]
-  ])("is not valid with %s as the last byte in place of 0x1c", async (_name, v) => {
-    expect(await verify(entry({ signature: SIGNATURE.slice(0, -2) + v }))).toEqual({
-      error: expect.stringMatching(/v of 27 or 28/)
-    });
-  });
-
-  it("is not valid in its high-s form, although that form recovers the same address", async () => {
-    const r = SIGNATURE.slice(2, 66);
-    const s = BigInt(`0x${SIGNATURE.slice(66, 130)}`);
-    const highS = (CURVE_ORDER - s).toString(16).padStart(64, "0");
-    const twin = `0x${r}${highS}1b` as `0x${string}`;
-
-    // The twin is a real signature of the same message by the same wallet. Only the encoding rule
-    // rejects it, which is why the rule has to be checked before recovery.
-    const recovered = await recoverMessageAddress({ message: getWalletMessageToSign(KEY_ADDRESS, TIMESTAMP), signature: twin });
-    expect(recovered).toBe(ADDRESS);
-
-    expect(await verify(entry({ signature: twin }))).toEqual({ error: "wallet signature must use the low form of s" });
-  });
-
-  it("is not valid against a message built with authorAddress or another separator", async () => {
-    // Same wallet, same key, same timestamp: only the signed string differs.
-    const wallet = privateKeyToAccount(`0x${"02".repeat(32)}`);
-    expect(wallet.address).toBe(ADDRESS);
-    for (const message of [
-      `{"domainSeparator":"bitsocial-author-wallet","authorAddress":"${KEY_ADDRESS}","timestamp":${TIMESTAMP}}`,
-      `{"domainSeparator":"pkc-author-wallet","authorPublicKey":"${KEY_ADDRESS}","timestamp":${TIMESTAMP}}`
-    ]) {
-      const signature = await wallet.signMessage({ message });
-      expect(await verify(entry({ signature }))).toEqual({ error: expect.stringMatching(/does not prove/) });
-    }
-    // and signing the right string with that key reproduces the vector's signature exactly
-    expect(await wallet.signMessage({ message: getWalletMessageToSign(KEY_ADDRESS, TIMESTAMP) })).toBe(SIGNATURE);
+  it("finds the suffix only at the very end of the input", () => {
+    expect(hasParentBinding(suffix, parentCid)).toBe(true);
+    expect(hasParentBinding(`0xa9059cbb${suffix.slice(2)}`, parentCid)).toBe(true);
+    expect(hasParentBinding(`${suffix}00`, parentCid)).toBe(false);
+    expect(hasParentBinding(`0x${suffix.slice(4)}`, parentCid)).toBe(false);
+    expect(hasParentBinding("0x", parentCid)).toBe(false);
+    expect(hasParentBinding(suffix, "QmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR")).toBe(false);
   });
 });

@@ -1,8 +1,9 @@
-import { custom, numberToHex, pad, type Address, type Hex } from "viem";
+import { concat, custom, numberToHex, pad, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { _setTransportFactoryForTests } from "../src/chain.js";
 import {
   getKeyAddressFromPublicKey,
+  getParentBindingSuffix,
   getWalletMessageToSign,
   TIPPING_V1_FEE_RECIPIENT_OPTION,
   TIPPING_V1_TOKENS_OPTION,
@@ -25,7 +26,9 @@ export interface FakeTx {
   to: Address | null;
   value?: bigint;
   status?: "success" | "reverted";
-  blockTimestamp: number;
+  // The transaction's calldata. Left out, it is the parent binding for PARENT_CID alone, which is what a
+  // native tip on the default parent carries. Set it to test a missing or a different binding.
+  input?: Hex;
   logs?: FakeLog[];
 }
 
@@ -106,7 +109,7 @@ export class FakeChain {
         maxFeePerGas: "0x1",
         maxPriorityFeePerGas: "0x1",
         nonce: "0x0",
-        input: "0x",
+        input: tx.input ?? getParentBindingSuffix(PARENT_CID),
         type: "0x2",
         chainId: "0x1",
         accessList: [],
@@ -114,35 +117,6 @@ export class FakeChain {
         r: pad("0x1", { size: 32 }),
         s: pad("0x1", { size: 32 }),
         yParity: "0x0"
-      };
-    }
-
-    if (method === "eth_getBlockByNumber") {
-      const blockNumber = Number(BigInt(args[0] as string));
-      const entry = [...this.blockOf.entries()].find(([, number]) => number === blockNumber);
-      if (!entry) return null;
-      return {
-        number: numberToHex(blockNumber),
-        hash: pad("0xb1", { size: 32 }),
-        parentHash: pad("0xb0", { size: 32 }),
-        timestamp: numberToHex(this.txs.get(entry[0])!.blockTimestamp),
-        nonce: "0x0000000000000000",
-        difficulty: "0x0",
-        totalDifficulty: "0x0",
-        gasLimit: "0x1c9c380",
-        gasUsed: "0x5208",
-        baseFeePerGas: "0x1",
-        size: "0x1",
-        miner: pad("0x0", { size: 20 }),
-        extraData: "0x",
-        logsBloom: pad("0x0", { size: 256 }),
-        mixHash: pad("0x0", { size: 32 }),
-        receiptsRoot: pad("0x0", { size: 32 }),
-        sha3Uncles: pad("0x0", { size: 32 }),
-        stateRoot: pad("0x0", { size: 32 }),
-        transactionsRoot: pad("0x0", { size: 32 }),
-        transactions: [],
-        uncles: []
       };
     }
 
@@ -204,7 +178,7 @@ export const signWallet = async (
 ) => {
   const timestamp = overrides.timestamp ?? WALLET_TIMESTAMP;
   const signature = await author.wallet.signMessage({
-    message: overrides.message ?? getWalletMessageToSign(author.keyAddress, timestamp)
+    message: overrides.message ?? getWalletMessageToSign(author.keyAddress, author.wallet.address, timestamp)
   });
   return {
     address: overrides.address ?? author.wallet.address,
@@ -218,6 +192,10 @@ export const signWallet = async (
 export const PARENT_CID = "QmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR";
 export const PARENT_TIMESTAMP = 1_750_000_000;
 export const AFTER_PARENT = PARENT_TIMESTAMP + 600;
+
+// Calldata that ends with the parent binding for `parentCid`, after `callData` if there is any.
+export const withBinding = (parentCid: string = PARENT_CID, callData: Hex = "0x"): Hex =>
+  concat([callData, getParentBindingSuffix(parentCid)]);
 
 export interface FakeCommunity {
   publicKey: string;
