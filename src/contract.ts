@@ -365,10 +365,12 @@ export const parseTipClaim = (value: unknown): TipClaim => {
   return claim;
 };
 
-// The exact string an author's wallet signs (EIP-191) to prove it belongs to that author. Built by hand:
-// the field order and the absence of whitespace are part of the format.
-export const getWalletMessageToSign = (authorPublicKey: string, timestamp: number): string =>
-  `{"domainSeparator":"${WALLET_DOMAIN_SEPARATOR}","authorPublicKey":"${authorPublicKey}","timestamp":${timestamp}}`;
+// The exact string an author's wallet signs (EIP-191) to prove it belongs to that author: the BSIP-22
+// proof message. Built by hand: the field order and the absence of whitespace are part of the format.
+// The wallet's own address is in the message, in lowercase, so a signature cannot be made up first and
+// its address recovered from it afterwards. Lowercased here so a checksummed address gives the same bytes.
+export const getWalletMessageToSign = (authorPublicKey: string, walletAddress: string, timestamp: number): string =>
+  `{"domainSeparator":"${WALLET_DOMAIN_SEPARATOR}","authorPublicKey":"${authorPublicKey}","walletAddress":"${walletAddress.toLowerCase()}","timestamp":${timestamp}}`;
 
 const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 

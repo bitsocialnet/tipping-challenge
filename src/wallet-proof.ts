@@ -7,7 +7,14 @@ export interface AuthorWallet {
   signature?: { signature?: unknown; type?: unknown } | undefined;
 }
 
-export type WalletProofResult = { address: Address } | { error: string };
+// The three outcomes of BSIP-22. "unknown" is an entry of a signature type this verifier does not
+// implement: it is neither valid nor invalid, and it is not a proven wallet.
+export type WalletProofResult =
+  | { outcome: "valid"; address: Address }
+  | { outcome: "invalid"; error: string }
+  | { outcome: "unknown"; error: string };
+
+const invalid = (error: string): WalletProofResult => ({ outcome: "invalid", error });
 
 // A proof may be dated at most this far ahead of the verifier's clock. Fixed, not configurable, so that
 // verifiers differ only by their clocks and never by choice.
@@ -37,14 +44,18 @@ const checkSignatureEncoding = (signature: unknown): string | undefined => {
   return undefined;
 };
 
-// Verifies one entry of `author.wallets` against the key address of the author's signing key.
-// pkc-js only checks the entry's shape, so without this anyone could list a wallet they do not control.
+// Verifies one entry of `author.wallets` against the key address of the author's signing key, as
+// BSIP-22 (Author Wallet Proofs) defines it. pkc-js only checks the entry's shape, so without this anyone
+// could list a wallet they do not control.
 //
-// Follows the "Author Wallet Proofs" BSIP draft.
+// The order is BSIP-22's: the shape every entry has, then signature.type, then the eip191 rules. An entry
+// of another type is unknown, so the eip191 rules for address and timestamp are not applied to it.
 //
 // Stateless on purpose: no "newest timestamp wins" cache. The proof names the author's key, so only that
 // key can publish with it, and a reader can reproduce the check from the entry alone. No RPC either: an
 // EIP-191 signature from an ordinary account is checked by recovery.
+//
+// The README's "verify a wallet entry" snippet for UI clients is a copy of these rules. Change them together.
 export const verifyWalletProof = async ({
   wallet,
   authorKeyAddress,
@@ -54,43 +65,58 @@ export const verifyWalletProof = async ({
   authorKeyAddress: string;
   nowSeconds?: number;
 }): Promise<WalletProofResult> => {
+  // 1. The shape, whatever the type.
   if (typeof wallet !== "object" || wallet === null) {
-    return { error: "has no wallet for this chain" };
+    return invalid("has no wallet for this chain");
   }
-  if (!isLiteralAddress(wallet.address)) {
-    return { error: "wallet address must be a literal 0x address, not a name" };
+  if (typeof wallet.address !== "string") {
+    return invalid("wallet address must be a string");
   }
-  if (typeof wallet.timestamp !== "number" || !Number.isInteger(wallet.timestamp) || wallet.timestamp < 0) {
-    return { error: "wallet timestamp must be an integer" };
+  if (typeof wallet.timestamp !== "number" || !Number.isInteger(wallet.timestamp)) {
+    return invalid("wallet timestamp must be an integer");
   }
-  if (wallet.timestamp > nowSeconds + WALLET_TIMESTAMP_ALLOWANCE_SECONDS) {
-    return { error: `wallet timestamp is more than ${WALLET_TIMESTAMP_ALLOWANCE_SECONDS} seconds in the future` };
+  const proof = wallet.signature;
+  if (typeof proof !== "object" || proof === null || typeof proof.signature !== "string" || typeof proof.type !== "string") {
+    return invalid("wallet signature must be an object with a string signature and a string type");
   }
-  if (wallet.signature?.type !== WALLET_SIGNATURE_TYPE) {
+
+  // 2. The type.
+  if (proof.type !== WALLET_SIGNATURE_TYPE) {
     return {
-      error: `wallet signature type must be "${WALLET_SIGNATURE_TYPE}", got ${JSON.stringify(wallet.signature?.type)}`
+      outcome: "unknown",
+      error: `wallet signature type ${JSON.stringify(proof.type)} is unknown, only "${WALLET_SIGNATURE_TYPE}" can be verified`
     };
   }
-  const signature = wallet.signature.signature;
-  const encodingError = checkSignatureEncoding(signature);
+
+  // 3. The eip191 rules.
+  if (!isLiteralAddress(wallet.address)) {
+    return invalid("wallet address must be a literal 0x address, not a name");
+  }
+  if (wallet.timestamp < 0) {
+    return invalid("wallet timestamp must not be negative");
+  }
+  if (wallet.timestamp > nowSeconds + WALLET_TIMESTAMP_ALLOWANCE_SECONDS) {
+    return invalid(`wallet timestamp is more than ${WALLET_TIMESTAMP_ALLOWANCE_SECONDS} seconds in the future`);
+  }
+  const encodingError = checkSignatureEncoding(proof.signature);
   if (encodingError) {
-    return { error: encodingError };
+    return invalid(encodingError);
   }
 
   let valid = false;
   try {
     valid = await verifyMessage({
       address: wallet.address as Address,
-      message: getWalletMessageToSign(authorKeyAddress, wallet.timestamp),
-      signature: signature as Hex
+      message: getWalletMessageToSign(authorKeyAddress, wallet.address, wallet.timestamp),
+      signature: proof.signature as Hex
     });
   } catch {
     valid = false;
   }
 
   if (!valid) {
-    return { error: "wallet signature does not prove the wallet belongs to this author" };
+    return invalid("wallet signature does not prove the wallet belongs to this author");
   }
 
-  return { address: getAddress(wallet.address) };
+  return { outcome: "valid", address: getAddress(wallet.address) };
 };

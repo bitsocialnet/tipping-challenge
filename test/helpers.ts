@@ -178,7 +178,7 @@ export const signWallet = async (
 ) => {
   const timestamp = overrides.timestamp ?? WALLET_TIMESTAMP;
   const signature = await author.wallet.signMessage({
-    message: overrides.message ?? getWalletMessageToSign(author.keyAddress, timestamp)
+    message: overrides.message ?? getWalletMessageToSign(author.keyAddress, author.wallet.address, timestamp)
   });
   return {
     address: overrides.address ?? author.wallet.address,

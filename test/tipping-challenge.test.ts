@@ -152,7 +152,7 @@ describe("who is tipping whom", () => {
   it("rejects a tip to a wallet the tipper has proven as their own", async () => {
     // The tipper proves the same wallet the recipient uses: a different key, the same money.
     const sharedWallet = await recipient.wallet.signMessage({
-      message: `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"${tipper.keyAddress}","timestamp":1700000000}`
+      message: `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"${tipper.keyAddress}","walletAddress":"${to.toLowerCase()}","timestamp":1700000000}`
     });
     const request = await makeRequest(tipper, {
       tip: { chainId: 1, txHash: usdcTip() },
@@ -234,7 +234,7 @@ describe("which wallet entries count", () => {
       timestamp: 1_700_000_000,
       signature: {
         signature: await second.signMessage({
-          message: `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"${author.keyAddress}","timestamp":1700000000}`
+          message: `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"${author.keyAddress}","walletAddress":"${second.address.toLowerCase()}","timestamp":1700000000}`
         }),
         type: "eip191"
       }
@@ -298,7 +298,7 @@ describe("which wallet entries count", () => {
       timestamp: 1_700_000_000,
       signature: {
         signature: await second.signMessage({
-          message: `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"${tipper.keyAddress}","timestamp":1700000000}`
+          message: `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"${tipper.keyAddress}","walletAddress":"${second.address.toLowerCase()}","timestamp":1700000000}`
         }),
         type: "eip191"
       }
@@ -505,7 +505,7 @@ describe("who sends the transaction", () => {
       timestamp: 1_700_000_000,
       signature: {
         signature: await second.signMessage({
-          message: `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"${tipper.keyAddress}","timestamp":1700000000}`
+          message: `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"${tipper.keyAddress}","walletAddress":"${second.address.toLowerCase()}","timestamp":1700000000}`
         }),
         type: "eip191"
       }

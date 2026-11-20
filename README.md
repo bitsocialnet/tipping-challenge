@@ -259,29 +259,38 @@ It lives in the comment update, not in the comment, so a community that later st
 
 A tip is only meaningful if both wallets really belong to the two authors. pkc-js checks only the shape of `author.wallets`, so this challenge verifies each proof itself.
 
-The rules follow the [Author Wallet Proofs BSIP draft](https://github.com/bitsocialnet/BSIPs/issues/26). An entry is `{ address, timestamp, signature: { signature, type } }`. It is valid when:
+The rules are those of [BSIP-22, Author Wallet Proofs](https://github.com/bitsocialnet/BSIPs/blob/master/BSIPS/bsip-22.md). An entry is `{ address, timestamp, signature: { signature, type } }`. Verifying it has one of three outcomes: valid, invalid or unknown.
+
+First, whatever its type, the entry must have the right shape: `address` is a string, `timestamp` is an integer, and `signature` is an object whose `signature` and `type` are strings. An entry without this shape is **invalid**. Other members are ignored.
+
+Then, when `signature.type` is any string other than `eip191`, the entry is **unknown**: no further rule applies to it, and it is neither valid nor invalid.
+
+An `eip191` entry is **valid** when all of these hold, and **invalid** otherwise:
 
 - `address` is a literal `0x` address (40 hex digits, any letter case), not a name.
-- `signature.type` is `eip191`.
-- `timestamp` is an integer and is not more than 300 seconds later than the verifier's clock. The allowance is fixed.
+- `timestamp` is not negative and is not more than 300 seconds later than the verifier's clock. The allowance is fixed.
 - `signature.signature` is 65 bytes, `r || s || v`, written as `0x` followed by 130 hex digits, where:
   - `v`, the last byte, is `0x1b` or `0x1c` (27 or 28). The `0`/`1` form is rejected. A client whose signer returns `0` or `1` adds 27 before storing the signature.
   - `s` is in the lower half of the curve order: `s <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0`. The high-`s` form of the same signature recovers the same address and is rejected anyway, so every proof has one accepted encoding.
 - the address recovered from that signature, as an EIP-191 personal message over exactly this string, equals `address`:
 
 ```
-{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"<key address>","timestamp":<timestamp>}
+{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"<key address>","walletAddress":"<wallet address>","timestamp":<timestamp>}
 ```
 
-`authorPublicKey` is the **key address** of the author's signing key: the `12D3KooW…` form derived from `signature.publicKey`. It is never `author.address`, which is `author.name || keyAddress` and follows a name when the name is repointed. The field order is fixed and there is no whitespace.
+`authorPublicKey` is the **key address** of the author's signing key: the `12D3KooW…` form derived from `signature.publicKey`. It is never `author.address`, which is `author.name || keyAddress` and follows a name when the name is repointed.
+
+`walletAddress` is the entry's `address` with its hex digits in **lowercase**, whatever case the entry uses. The wallet signs its own address, so nobody can make up 65 bytes first and list whatever address they recover to.
+
+The field order is fixed and there is no whitespace.
+
+Only a valid entry is a proven wallet. An invalid or unknown entry is skipped: it can neither pay a tip nor receive one, and it does not stop the author's other entries from counting. BSIP-22 also asks community nodes to reject any publication that carries an invalid entry. That is the node's rule, not this challenge's; once pkc-js applies it, the check here becomes a second line of defence.
 
 Verification is stateless. There is no "newest timestamp wins" rule, and no RPC is needed. Signatures from contract accounts (ERC-1271) are not `eip191` proofs and do not verify.
 
-The `v` and `s` rules are checked before recovery, because recovery libraries (viem included) accept the other forms. The BSIP draft's test vector is part of this package's tests.
+The `v` and `s` rules are checked before recovery, because recovery libraries (viem included) accept the other forms. BSIP-22's test vectors are part of this package's tests.
 
-Proofs signed with the older `pkc-author-wallet` or `plebbit-author-wallet` strings, or over `author.address`, do not verify. Authors re-sign.
-
-The BSIP is still a draft, so these rules can change with it. It asks community nodes to verify wallet proofs on acceptance; once pkc-js does, the check here becomes a second line of defence.
+Proofs signed with the earlier draft string that does not name `walletAddress`, with the older `pkc-author-wallet` or `plebbit-author-wallet` strings, or over `author.address`, do not verify. Authors re-sign.
 
 ## Future work
 
@@ -325,7 +334,61 @@ Chains are named by `chainId` only. Offer a tip only when the comment's author h
 
 ### 2. Pick the recipient's wallet, and verify it before sending money
 
-The community verifies the recipient's wallet proof, but it does so after the money has moved. Verify it yourself first, with the [wallet proof](#wallet-proofs) rules, so a user never pays an address the author does not control. `verifyWalletProof` and `getKeyAddressFromPublicKey` are exported from this package.
+The community verifies the recipient's wallet proof, but it does so after the money has moved. Verify it yourself first, with the [wallet proof](#wallet-proofs) rules, so a user never pays an address the author does not control. For example with viem:
+
+```js
+import { verifyMessage } from "viem";
+
+// Half the secp256k1 curve order: s must not be above it.
+const HALF_ORDER = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n;
+
+// The exact string the wallet signs. The wallet address goes in lowercase.
+const getWalletMessageToSign = (authorKeyAddress, walletAddress, timestamp) =>
+  `{"domainSeparator":"bitsocial-author-wallet","authorPublicKey":"${authorKeyAddress}","walletAddress":"${walletAddress.toLowerCase()}","timestamp":${timestamp}}`;
+
+// Returns "valid", "invalid" or "unknown". Only "valid" is a wallet you may send to.
+// authorKeyAddress is the key address of the signature.publicKey that signed the comment.
+async function verifyWalletEntry(entry, authorKeyAddress, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const proof = entry?.signature;
+  if (typeof entry?.address !== "string" || !Number.isInteger(entry.timestamp)) return "invalid";
+  if (typeof proof?.signature !== "string" || typeof proof.type !== "string") return "invalid";
+  if (proof.type !== "eip191") return "unknown";
+
+  if (!/^0x[0-9a-fA-F]{40}$/.test(entry.address)) return "invalid";
+  if (entry.timestamp < 0 || entry.timestamp > nowSeconds + 300) return "invalid";
+
+  // viem accepts a v of 0 or 1 and a high s. The rules do not, so check both before recovering.
+  if (!/^0x[0-9a-fA-F]{130}$/.test(proof.signature)) return "invalid";
+  const v = parseInt(proof.signature.slice(130, 132), 16);
+  const s = BigInt(`0x${proof.signature.slice(66, 130)}`);
+  if ((v !== 27 && v !== 28) || s === 0n || s > HALF_ORDER) return "invalid";
+
+  try {
+    const signedByWallet = await verifyMessage({
+      address: entry.address,
+      message: getWalletMessageToSign(authorKeyAddress, entry.address, entry.timestamp),
+      signature: proof.signature
+    });
+    return signedByWallet ? "valid" : "invalid";
+  } catch {
+    return "invalid";
+  }
+}
+```
+
+`authorKeyAddress` is the `12D3KooW…` key address of the comment's `signature.publicKey`, as [BSIP-10](https://github.com/bitsocialnet/BSIPs/blob/master/BSIPS/bsip-10.md#key-addresses) derives it. Do not pass `author.address` or `author.name`. Verify the comment's own signature first: a wallet entry says nothing in a comment whose signature is not valid.
+
+The user's own entry is made the same way. The wallet signs that string as a personal message, and the client stores the result:
+
+```js
+const timestamp = Math.floor(Date.now() / 1000);
+const signature = await walletClient.signMessage({
+  message: getWalletMessageToSign(userKeyAddress, walletClient.account.address, timestamp)
+});
+const entry = { address: walletClient.account.address, timestamp, signature: { signature, type: "eip191" } };
+```
+
+viem signs with a `v` of 27 or 28 and a low `s`. A signer that returns a `v` of 0 or 1 needs 27 added before the signature is stored.
 
 The keys of `author.wallets` do not select a chain, so every client must pick the same entry by the same rule:
 
