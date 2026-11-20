@@ -1,6 +1,6 @@
 // The tipping/v1 contract: everything a publishing client and a community node have to agree on.
-// Nothing in this file touches the network or pkc-js, so a client can import it without pulling in the
-// challenge itself.
+// Nothing in this file touches the network or pkc-js. It is not exported from the package: a client
+// follows the README, whose snippets restate these rules, so change the two together.
 
 import { concatHex, isAddress, keccak256, stringToHex, type Hex } from "viem";
 

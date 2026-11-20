@@ -328,7 +328,7 @@ function getTippingConfig(community) {
 }
 ```
 
-Never look at which package produced the options. The record does not say, and you do not need it. If you bundle npm packages, `parseTipTokens` from this package validates the list exactly as the community node does.
+Never look at which package produced the options. The record does not say, and you do not need it. The community node refuses to save a list that breaks the [token list](#the-token-list) rules, so a client reads the entries as they are.
 
 Chains are named by `chainId` only. Offer a tip only when the comment's author has at least one valid `author.wallets` entry, and the user has one too.
 
@@ -403,7 +403,22 @@ If no entry is valid, do not offer a tip.
 
 Send the token from a wallet the user has a valid `author.wallets` entry for, to the recipient wallet picked above. If the token has a fee, also send the fee, on the same chain ID, from any of the user's valid wallets to `tipping/v1/feeRecipient`.
 
-- Compute a percentage fee and round **up** if you want to be safe. The community requires at least the rounded-down amount.
+- Compute the fee with integers only. A float can round to one unit less than the community requires, and then the tip is not shown:
+
+```js
+// The fee owed for a tip of `amount` (a bigint, in the token's smallest unit) under one token entry.
+// It is paid in the tipped token, except for an erc721 entry, where it is paid in fee.token.
+function getOwedFee(token, amount) {
+  const fee = token.fee;
+  if (!fee) return 0n;
+  if (fee.amount !== undefined) return BigInt(fee.amount);
+  const [whole, fraction = ""] = fee.percent.split(".");
+  const scaled = BigInt(whole + fraction.padEnd(4, "0")); // "2.5" becomes 25000
+  return (amount * scaled) / 1_000_000n; // rounds down, as the community does
+}
+```
+
+  This is the least the community accepts, and paying more is allowed. When it is `0n`, no fee is owed and no fee transaction is needed.
 - **End every transaction with the [parent binding](#the-parent-binding)**, built from the `cid` of the comment being tipped. Both the tip transaction and the fee transaction need it. A wallet's own send screen will not add it, so the client builds and sends the transaction itself, from the wallet it holds for the user. For example with viem:
 
 ```js
@@ -425,7 +440,7 @@ await walletClient.sendTransaction({
 });
 ```
 
-  This package exports the same bytes as `getParentBindingSuffix(parentCid)`, and `hasParentBinding(input, parentCid)` to check a transaction's `input` the way the community node does.
+  The [parent binding](#the-parent-binding) section has a test vector for these 65 bytes.
 
 - **Send every transaction from one of the user's proven wallets.** Do not hand it to a relayer, a paymaster or an ERC-4337 bundler: [the tipper must be the sender](#who-sends-the-transaction). The wallet therefore needs native coin for gas.
 - **Simulate the tip and the fee transaction before sending either** (`eth_estimateGas` or `eth_call`, with the suffix in place). A receiver with code, or a token contract that rejects trailing calldata, makes the transaction revert, and simulating shows that before any money moves.
