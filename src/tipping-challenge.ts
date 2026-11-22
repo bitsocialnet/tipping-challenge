@@ -351,6 +351,13 @@ const getChallenge = async ({
   const comment = challengeRequestMessage.comment;
   if (!comment) return { success: true };
 
+  // The verified result is written to the comment update as `tip`. pkc-js keeps unknown fields of the
+  // signed comment and shows them on the Comment instance under the same name, so an author could sign a
+  // reply that carries its own `tip` and send no claim. Checked before anything else, claim or no claim.
+  if ((comment as { tip?: unknown }).tip !== undefined) {
+    return fail("A comment cannot carry its own tip field. A tip is claimed with a challenge answer and written by the community.");
+  }
+
   // The claim is this challenge's pre-answer: a JSON string the client put in the request's
   // challengeAnswers under this challenge's index. pkc-js hands it over as `challengeAnswer`. No answer
   // means no tip, and the reply passes untouched.
