@@ -93,6 +93,41 @@ describe("publications without a tip", () => {
   });
 });
 
+// A stand-in for the verified result, as an author would forge it into the signed comment.
+const forgedTip = { contract: "tipping/v1", chainId: 1, txHash: newTxHash(), type: "native", from, to, amount: "1000000000000000000000" };
+
+const withOwnTipField = async (
+  options: Parameters<typeof makeRequest>[1] = {}
+): Promise<GetChallengeArgsInput["challengeRequestMessage"]> => {
+  const request = await makeRequest(tipper, options);
+  (request.comment as unknown as Record<string, unknown>)["tip"] = forgedTip;
+  return request;
+};
+
+describe("a comment that carries its own tip field", () => {
+  it("rejects a reply that carries a tip field and no claim, without touching the chain", async () => {
+    expectFailure(await run(await withOwnTipField()), /cannot carry its own tip field/);
+    expect(chain.requests).toEqual([]);
+  });
+
+  it("rejects a post that carries a tip field", async () => {
+    expectFailure(await run(await withOwnTipField({ parentCid: null, wallets: null })), /cannot carry its own tip field/);
+  });
+
+  it("rejects it even with a claim that would verify, and leaves the transaction unclaimed", async () => {
+    const txHash = usdcTip();
+    expectFailure(await run(await withOwnTipField({ tip: { chainId: 1, txHash } })), /cannot carry its own tip field/);
+    expect(chain.requests).toEqual([]);
+    // The same payment still backs a reply without the field.
+    const result = await run(await makeRequest(tipper, { tip: { chainId: 1, txHash } }));
+    expect(result).toMatchObject({ success: true, commentUpdate: { tip: { txHash, amount: "5000000" } } });
+  });
+
+  it("rejects it even when the settings are broken", async () => {
+    expectFailure(await run(await withOwnTipField(), buildSettings({ tokens: "[" })), /cannot carry its own tip field/);
+  });
+});
+
 describe("the claim", () => {
   it("rejects a tip when the settings are broken", async () => {
     const request = await makeRequest(tipper, { tip: { chainId: 1, txHash: usdcTip() } });

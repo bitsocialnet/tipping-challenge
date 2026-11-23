@@ -15,7 +15,7 @@ Four things follow from that design:
 - **The community cannot intercept a tip.** The money moves before the reply is published, straight to the recipient.
 - **The community can hide a tip but cannot fake one.** The verified result includes the transaction hash, so any client can check it against the chain.
 - **A payment is made for one comment.** The transaction carries a suffix naming the parent comment, so it cannot back a tip on another comment or in another community. See [The parent binding](#the-parent-binding).
-- **Replies without a tip are not affected.** The challenge never prompts anyone. It passes everything that carries no tip claim.
+- **Replies without a tip are not affected.** The challenge never prompts anyone. It passes everything that carries no tip claim, except a comment that carries its own `tip` field. See [A comment cannot carry `tip`](#a-comment-cannot-carry-tip).
 
 ## The `tipping/v1` contract
 
@@ -39,7 +39,7 @@ This package is one implementation. Anything that publishes `tipping/v1/tokens` 
 | `chainId` | yes | The numeric chain ID, as a JSON number: `1` for Ethereum mainnet, `8453` for Base. A positive integer, never a string |
 | `type` | yes | `native`, `erc20` or `erc721` |
 | `address` | for `erc20` and `erc721` | The token contract. Left out for `native` |
-| `minAmount` | no | Smallest tip accepted. Not allowed for `erc721` |
+| `minAmount` | no | Smallest tip accepted. Not allowed for `erc721`. Set it on every `erc20` entry: see below |
 | `fee` | no | The community fee for a tip in this token. Leave out to charge nothing |
 
 `fee` is one of:
@@ -61,13 +61,15 @@ Rules that apply to the whole list:
 
 A percentage fee is rounded **down**: `fee = floor(amount × percent / 100)`. A client may pay more. When the result is 0, no fee is owed.
 
+**Set `minAmount` to keep out zero-amount tips.** An ERC-20 `transfer` of 0 succeeds and emits a `Transfer` event, so on an `erc20` entry without `minAmount` it verifies as a tip with `amount: "0"`, and a percentage fee on it rounds down to nothing. It costs the tipper only gas. A native coin tip must already have a value above 0, but a tip of one unit is as cheap, so a `minAmount` is recommended there too.
+
 Example. The first ERC-20 is Bitsocial's $BSO on Ethereum mainnet. The other contract addresses are placeholders, not real tokens:
 
 ```json
 [
   { "chainId": 1, "type": "native", "minAmount": "1000000000000000", "fee": { "percent": "2" } },
-  { "chainId": 1, "type": "erc20", "address": "0xB50cea4c109dc223A10d44c14f521CaeD91DaB5A", "fee": { "percent": "2.5" } },
-  { "chainId": 1, "type": "erc20", "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0002", "fee": { "amount": "500000000000000000" } },
+  { "chainId": 1, "type": "erc20", "address": "0xB50cea4c109dc223A10d44c14f521CaeD91DaB5A", "minAmount": "1000000000000000000", "fee": { "percent": "2.5" } },
+  { "chainId": 1, "type": "erc20", "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0002", "minAmount": "1000000000000000000", "fee": { "amount": "500000000000000000" } },
   { "chainId": 1, "type": "erc721", "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001", "fee": { "amount": "1000000", "token": "0xB50cea4c109dc223A10d44c14f521CaeD91DaB5A" } },
   { "chainId": 1, "type": "erc721", "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0002" }
 ]
@@ -94,6 +96,14 @@ challengeAnswers: {
 **What the challenge reads.** pkc-js hands the challenge the answer at its own index as `challengeAnswer`. No answer means no claim, and the reply passes untouched. The claim is not part of the signed comment, so it is not stored with the reply and not visible to other peers. Only the community node that receives the request sees it.
 
 The claim carries only those three keys. Any other key is rejected, so a claim cannot carry fields that look like the verified result. An answer that is not JSON, or not an object, is rejected.
+
+### A comment cannot carry `tip`
+
+The verified result is written to the comment update under `tip`. pkc-js keeps unknown fields of a signed comment and shows them on the `Comment` instance under the same name, so an author could sign a comment that carries its own `tip` field and send no claim.
+
+So the challenge rejects any comment, post or reply, whose signed publication has a top-level `tip` field. This is checked first, with or without a claim, and before the settings or the chain are read. A claim sent along with it is not verified and its transaction is not marked as used.
+
+This does not replace the client rule in [Display verified tips only](#5-display-verified-tips-only). The challenge does not run for an author excused by an `exclude` rule, and it never saw comments published before it was configured.
 
 ### What a valid tip is
 
@@ -305,7 +315,7 @@ Proofs signed with the earlier draft string that does not name `walletAddress`, 
 - **No sponsored gas.** [The tipper sends every claimed transaction](#who-sends-the-transaction), so the tipper's wallet needs the chain's native coin for gas, even for an ERC-20 or ERC-721 tip. Relayers, paymasters and ERC-4337 bundlers cannot submit a tip.
 - **A tip payment is recognisable on chain.** The suffix marks the transaction as a tip, whether or not the community shows it. Anyone who holds a comment's CID can hash it and match the payment to that comment, even when the reply was rejected or the tip is hidden.
 - **Communities that hide authors.** The recipient's wallet proof is checked against the signing key stored with the parent comment. A community that replaces author identities (pseudonymity) may store a different key there, in which case tips are rejected. This combination has not been tested.
-- **Excluded authors.** An author excused from this challenge by an `exclude` rule skips verification. No verified result is written for their reply, so a tip they paid does not show.
+- **Excluded authors.** An author excused from this challenge by an `exclude` rule skips verification. No verified result is written for their reply, so a tip they paid does not show. The check that [a comment cannot carry `tip`](#a-comment-cannot-carry-tip) is skipped for them too, which is why clients read the comment update only.
 
 ## For UI client developers
 
@@ -482,7 +492,9 @@ Show a tip only when both are true:
 
 Do not display from the author's claim. In a community that does not run this challenge, anyone can publish a reply with any `tip` field they like, and nothing has checked it.
 
-The claim is not stored with the reply. The verified result sits at the top level of the comment update, so on a `Comment` instance it is `comment.tip`.
+The claim is not stored with the reply. The verified result sits at the top level of the comment update, so read it from there: `comment.raw.commentUpdate?.tip`. `raw.commentUpdate` is missing until the first update arrives, and a missing update means no verified tip. A comment loaded from a page carries `raw` too.
+
+**Do not read `comment.tip`.** pkc-js copies unknown fields of the signed comment onto the `Comment` instance as well, so when the comment update has no `tip`, `comment.tip` is whatever the author signed. The challenge [rejects a comment that carries `tip`](#a-comment-cannot-carry-tip), but it does not run for an author excused by an `exclude` rule, and it never saw comments published before it was configured. Only the comment update is written by the community.
 
 Before displaying a tip, verify the wallets it names: `tip.from` must be the address of a valid `author.wallets` entry of the reply's author, and `tip.to` the address of a valid entry of the tipped comment's author. That check needs no network.
 
@@ -508,7 +520,7 @@ Add the challenge to the community's `settings.challenges`. Option values are st
   options: {
     "tipping/v1/tokens": JSON.stringify([
       { chainId: 1, type: "native", minAmount: "1000000000000000" },
-      { chainId: 1, type: "erc20", address: "0xB50cea4c109dc223A10d44c14f521CaeD91DaB5A", fee: { percent: "2.5" } }
+      { chainId: 1, type: "erc20", address: "0xB50cea4c109dc223A10d44c14f521CaeD91DaB5A", minAmount: "1000000000000000000", fee: { percent: "2.5" } }
     ]),
     "tipping/v1/feeRecipient": "0x…",
     rpcUrls: JSON.stringify({ "1": "https://your-eth-node.example" })
