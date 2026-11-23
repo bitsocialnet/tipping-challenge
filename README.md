@@ -504,13 +504,15 @@ To show a total on a comment, sum the verified tips of its loaded replies, per `
 
 ## Installation
 
-The challenge runs on the community node. It needs Node.js 22 or later and is ESM-only. Install it in one of the ways below, then set it on the community as [Configuration](#configuration) describes.
+The challenge runs on the community node. The node needs Node.js 22.19 or later, which is what pkc-js requires, and the package is ESM-only. Install it in one of the ways below, then set it on the community as [Configuration](#configuration) describes.
 
 ### With bitsocial-cli
 
 ```bash
 bitsocial challenge install @bitsocial/tipping-challenge
 ```
+
+If the daemon was started with a custom `--pkcOptions.dataPath`, pass the same `--pkcOptions.dataPath` to `bitsocial challenge install`. Otherwise the package lands in the default data path, where the daemon does not look.
 
 The token list is a JSON string, which is awkward to pass as a command line flag, so put the edit in a file:
 
@@ -534,11 +536,11 @@ The token list is a JSON string, which is awkward to pass as a command line flag
 bitsocial community edit your-community.bso --jsonFile tipping.json
 ```
 
-`--jsonFile` replaces the whole `settings.challenges` array, so list the community's other challenges in the file too.
+The CLI merges the file into the community's current settings, so other settings are kept. Arrays are the exception: `--jsonFile` replaces the whole `settings.challenges` array, so list the community's other challenges in the file too.
 
 ### With pkc-js over RPC
 
-Install the challenge on the machine that runs the RPC server:
+Install the challenge on the machine that runs the RPC server, with the daemon's `--pkcOptions.dataPath` if it has one:
 
 ```bash
 bitsocial challenge install @bitsocial/tipping-challenge
@@ -552,20 +554,26 @@ import PKC from "@pkcprotocol/pkc-js";
 const pkc = await PKC({ pkcRpcClientsOptions: ["ws://localhost:9138"] });
 const community = await pkc.createCommunity({ address: "your-community.bso" });
 
+const tipping = {
+  name: "@bitsocial/tipping-challenge",
+  options: {
+    "tipping/v1/tokens": JSON.stringify([{ chainId: 1, type: "native", minAmount: "1000000000000000" }])
+  },
+  publicOptions: ["tipping/v1/tokens"]
+};
+
+// Keep the other challenges. Drop an earlier tipping entry so that running this twice does not add it twice.
+const others = (community.settings?.challenges ?? []).filter((challenge) => challenge.name !== tipping.name);
+
 await community.edit({
   settings: {
-    challenges: [
-      {
-        name: "@bitsocial/tipping-challenge",
-        options: {
-          "tipping/v1/tokens": JSON.stringify([{ chainId: 1, type: "native", minAmount: "1000000000000000" }])
-        },
-        publicOptions: ["tipping/v1/tokens"]
-      }
-    ]
+    ...community.settings,
+    challenges: [...others, tipping]
   }
 });
 ```
+
+`community.edit` replaces the whole `settings` object, not only `settings.challenges`. An edit that passes `settings: { challenges: [tipping] }` removes the community's other challenges and its other settings, such as `settings.pages`. That is why the example spreads the current settings and adds to the current challenges.
 
 ### With pkc-js, without RPC
 
@@ -582,7 +590,7 @@ import tippingChallenge from "@bitsocial/tipping-challenge";
 PKC.challenges["@bitsocial/tipping-challenge"] = tippingChallenge;
 ```
 
-Then call `community.edit` as in the RPC example above.
+Then call `community.edit` as in the RPC example above, keeping the current settings and challenges the same way.
 
 ### From a clone
 
