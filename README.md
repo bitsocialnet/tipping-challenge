@@ -68,8 +68,8 @@ Example. The first ERC-20 is Bitsocial's $BSO on Ethereum mainnet. The other con
 ```json
 [
   { "chainId": 1, "type": "native", "minAmount": "1000000000000000", "fee": { "percent": "2" } },
-  { "chainId": 1, "type": "erc20", "address": "0xB50cea4c109dc223A10d44c14f521CaeD91DaB5A", "fee": { "percent": "2.5" } },
-  { "chainId": 1, "type": "erc20", "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0002", "fee": { "amount": "500000000000000000" } },
+  { "chainId": 1, "type": "erc20", "address": "0xB50cea4c109dc223A10d44c14f521CaeD91DaB5A", "minAmount": "1000000000000000000", "fee": { "percent": "2.5" } },
+  { "chainId": 1, "type": "erc20", "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0002", "minAmount": "1000000000000000000", "fee": { "amount": "500000000000000000" } },
   { "chainId": 1, "type": "erc721", "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001", "fee": { "amount": "1000000", "token": "0xB50cea4c109dc223A10d44c14f521CaeD91DaB5A" } },
   { "chainId": 1, "type": "erc721", "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0002" }
 ]
@@ -492,7 +492,7 @@ Show a tip only when both are true:
 
 Do not display from the author's claim. In a community that does not run this challenge, anyone can publish a reply with any `tip` field they like, and nothing has checked it.
 
-The claim is not stored with the reply. The verified result sits at the top level of the comment update, so read it from there: `comment.raw.commentUpdate.tip`. A comment loaded from a page carries `raw` too.
+The claim is not stored with the reply. The verified result sits at the top level of the comment update, so read it from there: `comment.raw.commentUpdate?.tip`. `raw.commentUpdate` is missing until the first update arrives, and a missing update means no verified tip. A comment loaded from a page carries `raw` too.
 
 **Do not read `comment.tip`.** pkc-js copies unknown fields of the signed comment onto the `Comment` instance as well, so when the comment update has no `tip`, `comment.tip` is whatever the author signed. The challenge [rejects a comment that carries `tip`](#a-comment-cannot-carry-tip), but it does not run for an author excused by an `exclude` rule, and it never saw comments published before it was configured. Only the comment update is written by the community.
 
