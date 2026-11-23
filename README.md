@@ -504,11 +504,99 @@ To show a total on a comment, sum the verified tips of its loaded replies, per `
 
 ## Installation
 
+The challenge runs on the community node. The node needs Node.js 22.19 or later, which is what pkc-js requires, and the package is ESM-only. Install it in one of the ways below, then set it on the community as [Configuration](#configuration) describes.
+
+### With bitsocial-cli
+
+```bash
+bitsocial challenge install @bitsocial/tipping-challenge
+```
+
+If the daemon was started with a custom `--pkcOptions.dataPath`, pass the same `--pkcOptions.dataPath` to `bitsocial challenge install`. Otherwise the package lands in the default data path, where the daemon does not look.
+
+The token list is a JSON string, which is awkward to pass as a command line flag, so put the edit in a file:
+
+```json
+{
+  "settings": {
+    "challenges": [
+      {
+        "name": "@bitsocial/tipping-challenge",
+        "options": {
+          "tipping/v1/tokens": "[{\"chainId\":1,\"type\":\"native\",\"minAmount\":\"1000000000000000\"}]"
+        },
+        "publicOptions": ["tipping/v1/tokens"]
+      }
+    ]
+  }
+}
+```
+
+```bash
+bitsocial community edit your-community.bso --jsonFile tipping.json
+```
+
+The CLI merges the file into the community's current settings, so other settings are kept. Arrays are the exception: `--jsonFile` replaces the whole `settings.challenges` array, so list the community's other challenges in the file too.
+
+### With pkc-js over RPC
+
+Install the challenge on the machine that runs the RPC server, with the daemon's `--pkcOptions.dataPath` if it has one:
+
+```bash
+bitsocial challenge install @bitsocial/tipping-challenge
+```
+
+The RPC client then sets the challenge by name. It does not install or register the package itself:
+
+```ts
+import PKC from "@pkcprotocol/pkc-js";
+
+const pkc = await PKC({ pkcRpcClientsOptions: ["ws://localhost:9138"] });
+// pkc-js has no default error listener. Without one, an emitted error crashes the process.
+pkc.on("error", (error) => console.error(error));
+const community = await pkc.createCommunity({ address: "your-community.bso" });
+
+const tipping = {
+  name: "@bitsocial/tipping-challenge",
+  options: {
+    "tipping/v1/tokens": JSON.stringify([{ chainId: 1, type: "native", minAmount: "1000000000000000" }])
+  },
+  publicOptions: ["tipping/v1/tokens"]
+};
+
+// Keep the other challenges. Drop an earlier tipping entry so that running this twice does not add it twice.
+const others = (community.settings?.challenges ?? []).filter((challenge) => challenge.name !== tipping.name);
+
+await community.edit({
+  settings: {
+    ...community.settings,
+    challenges: [...others, tipping]
+  }
+});
+```
+
+`community.edit` replaces the whole `settings` object, not only `settings.challenges`. An edit that passes `settings: { challenges: [tipping] }` removes the community's other challenges and its other settings, such as `settings.pages`. That is why the example spreads the current settings and adds to the current challenges.
+
+### With pkc-js, without RPC
+
+A node that runs pkc-js in its own process installs the package from npm and registers it before it starts the community:
+
 ```bash
 npm install @bitsocial/tipping-challenge
 ```
 
-Then register the package with your node the way your pkc-js setup loads challenge packages. To build from a clone instead, run `npm install` and `npm run build`.
+```ts
+import PKC from "@pkcprotocol/pkc-js";
+import tippingChallenge from "@bitsocial/tipping-challenge";
+
+PKC.challenges["@bitsocial/tipping-challenge"] = tippingChallenge;
+```
+
+Then call `community.edit` as in the RPC example above, keeping the current settings and challenges the same way.
+
+### From a clone
+
+Run `npm install` and `npm run build`, then register the default export of `dist/index.js` the same way.
 
 ## Configuration
 
