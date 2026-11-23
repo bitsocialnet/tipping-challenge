@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.1](https://github.com/bitsocialnet/tipping-challenge/compare/v0.2.0...v0.2.1) (2026-11-23)
+
+### Bug Fixes
+
+* reject a comment that carries its own tip field ([bbc09e0](https://github.com/bitsocialnet/tipping-challenge/commit/bbc09e046aca59426f91d90a6a6fc0608b80c528))
+
 ## 0.2.0 (2026-11-20)
 
 ### ⚠ BREAKING CHANGES
