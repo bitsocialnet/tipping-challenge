@@ -552,6 +552,8 @@ The RPC client then sets the challenge by name. It does not install or register 
 import PKC from "@pkcprotocol/pkc-js";
 
 const pkc = await PKC({ pkcRpcClientsOptions: ["ws://localhost:9138"] });
+// pkc-js has no default error listener. Without one, an emitted error crashes the process.
+pkc.on("error", (error) => console.error(error));
 const community = await pkc.createCommunity({ address: "your-community.bso" });
 
 const tipping = {
