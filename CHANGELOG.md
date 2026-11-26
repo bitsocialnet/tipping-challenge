@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.2](https://github.com/bitsocialnet/tipping-challenge/compare/v0.2.1...v0.2.2) (2026-11-26)
+
+### Bug Fixes
+
+* **deps:** upgrade @pkcprotocol/pkc-js 0.0.152 -> 0.0.163 ([#18](https://github.com/bitsocialnet/tipping-challenge/issues/18)) ([d83f616](https://github.com/bitsocialnet/tipping-challenge/commit/d83f61638f562d18fa91acf5ac792f63d571be14))
+
 ## [0.2.1](https://github.com/bitsocialnet/tipping-challenge/compare/v0.2.0...v0.2.1) (2026-11-23)
 
 ### Bug Fixes
