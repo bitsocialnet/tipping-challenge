@@ -1,3 +1,4 @@
+import { vi, type Mock } from "vitest";
 import { concat, custom, numberToHex, pad, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { _setTransportFactoryForTests } from "../src/chain.js";
@@ -9,7 +10,27 @@ import {
   TIPPING_V1_TOKENS_OPTION,
   type TipToken
 } from "../src/contract.js";
-import type { CommunityChallengeSetting, GetChallengeArgsInput } from "../src/types.js";
+import type { ChallengeLog, CommunityChallengeSetting, GetChallengeArgsInput } from "../src/types.js";
+
+// --- the log pkc-js passes into each call ----------------------------------------------------------
+
+// A stand-in for the pkc-logger child pkc-js passes. The three writing methods are mocks. `child` returns the
+// same stub, for pkc-js's validateChallengeFileFactory, which derives the factory's log from the one it is given.
+export type TestLog = ChallengeLog & Mock & { error: Mock; trace: Mock };
+
+export const makeLog = (): TestLog => {
+  const log = vi.fn() as unknown as TestLog;
+  log.error = vi.fn();
+  log.trace = vi.fn();
+  (log as unknown as { child: () => TestLog }).child = () => log;
+  return log;
+};
+
+/** Every line written to the log, at any level, as one string per line. */
+export const loggedLines = (log: TestLog): string[] =>
+  [...log.mock.calls, ...log.error.mock.calls, ...log.trace.mock.calls].map((args) =>
+    args.map((arg: unknown) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" ")
+  );
 
 // --- a fake chain, served through a real viem client ------------------------------------------------
 

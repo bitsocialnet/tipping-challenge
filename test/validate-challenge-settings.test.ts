@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { getAddress } from "viem";
 import tippingChallenge, { optionInputs, validateChallengeSettings } from "../src/tipping-challenge.js";
 import { TIPPING_V1_FEE_RECIPIENT_OPTION, TIPPING_V1_TOKENS_OPTION, type TipToken } from "../src/contract.js";
-import { buildSettings } from "./helpers.js";
+import { buildSettings, makeLog } from "./helpers.js";
 
 // Placeholder contracts, not real tokens.
 const USDC = getAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001");
@@ -12,11 +12,11 @@ const native: TipToken = { chainId: 1, type: "native" };
 const usdcWithFee: TipToken = { chainId: 1, type: "erc20", address: USDC, fee: { percent: "2.5" } };
 
 const validate = (params: Parameters<typeof buildSettings>[0]) => () =>
-  validateChallengeSettings({ challengeSettings: buildSettings(params) });
+  validateChallengeSettings({ challengeSettings: buildSettings(params), log: makeLog() });
 
 describe("factory", () => {
   it("returns the challenge file without throwing, even for settings that would not validate", () => {
-    const file = tippingChallenge({ challengeSettings: buildSettings({ tokens: "not json" }) });
+    const file = tippingChallenge({ challengeSettings: buildSettings({ tokens: "not json" }), log: makeLog() });
     expect(file.type).toBe("text/plain");
     expect(typeof file.getChallenge).toBe("function");
     expect(file.validateChallengeSettings).toBe(validateChallengeSettings);
@@ -113,6 +113,10 @@ describe("validateChallengeSettings", () => {
 
   it("rejects malformed rpcUrls JSON and a chain ID no token uses", () => {
     expect(validate({ tokens: [native], rpcUrls: "{" })).toThrow(/not valid JSON/);
+    // JSON.parse quotes a snippet of its input, which would put part of an RPC URL in the error.
+    expect(validate({ tokens: [native], rpcUrls: '{"1": https://rpc.example/SECRETKEY}' })).toThrow(
+      /^option rpcUrls looks like a JSON object but is not valid JSON$/
+    );
     expect(validate({ tokens: [native], rpcUrls: JSON.stringify({ "1": ["https://a.example"] }) })).toThrow(/must be a string/);
     expect(validate({ tokens: [native], rpcUrls: JSON.stringify({ "8453": "https://c.example" }) })).toThrow(/which no token uses/);
   });
@@ -140,6 +144,6 @@ describe("validateChallengeSettings", () => {
 describe("pkc-js compatibility", () => {
   it("is a challenge file factory pkc-js accepts", async () => {
     const { validateChallengeFileFactory } = await import("@pkcprotocol/pkc-js/challenges");
-    expect(() => validateChallengeFileFactory(tippingChallenge, { name: "@bitsocial/tipping-challenge" })).not.toThrow();
+    expect(() => validateChallengeFileFactory(tippingChallenge, { name: "@bitsocial/tipping-challenge", log: makeLog() })).not.toThrow();
   });
 });

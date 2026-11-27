@@ -81,8 +81,9 @@ export const parseRpcUrls = (rpcUrls: string | undefined): { all: string[]; byCh
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed);
-  } catch (e) {
-    throw new Error(`option rpcUrls looks like a JSON object but is not valid JSON: ${(e as Error).message}`);
+  } catch {
+    // JSON.parse's message quotes a snippet of the input, which here is an RPC URL that may embed an API key.
+    throw new Error("option rpcUrls looks like a JSON object but is not valid JSON");
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("option rpcUrls must be a JSON object of chain ID to URLs, or a comma-separated list of URLs");

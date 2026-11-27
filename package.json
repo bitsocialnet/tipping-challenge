@@ -52,7 +52,7 @@
   "devDependencies": {
     "@commitlint/cli": "20.4.3",
     "@commitlint/config-conventional": "20.4.3",
-    "@pkcprotocol/pkc-js": "0.0.163",
+    "@pkcprotocol/pkc-js": "0.0.165",
     "@release-it/conventional-changelog": "10.0.5",
     "@types/node": "25.3.5",
     "husky": "9.1.7",
@@ -61,7 +61,7 @@
     "vitest": "4.1.12"
   },
   "peerDependencies": {
-    "@pkcprotocol/pkc-js": ">=0.0.153"
+    "@pkcprotocol/pkc-js": ">=0.0.165"
   },
   "peerDependenciesMeta": {
     "@pkcprotocol/pkc-js": {

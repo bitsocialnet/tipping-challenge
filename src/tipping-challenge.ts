@@ -2,6 +2,7 @@ import { getAddress, type Address, type PublicClient } from "viem";
 import type {
   ChallengeFileInput,
   ChallengeInput,
+  ChallengeLog,
   ChallengeResultInput,
   CommunityChallengeSetting,
   GetChallengeArgsInput,
@@ -107,7 +108,13 @@ const parseSettings = (challengeSettings: CommunityChallengeSetting | undefined)
 };
 
 // Sync and no network, per pkc-js docs/protocol/challenge-authoring.md: it runs on every community start.
-const validateChallengeSettings = ({ challengeSettings }: { challengeSettings: CommunityChallengeSetting }): void => {
+// Takes the log pkc-js passes but writes nothing to it: a throw already reaches the owner as the edit's error.
+const validateChallengeSettings = ({
+  challengeSettings
+}: {
+  challengeSettings: CommunityChallengeSetting;
+  log: ChallengeLog;
+}): void => {
   const publicOptions = challengeSettings.publicOptions ?? [];
 
   // A client that cannot read the token list cannot offer a tip the community will accept, so
@@ -345,8 +352,23 @@ const getChallenge = async ({
   challengeSettings,
   challengeRequestMessage,
   challengeAnswer,
-  community
+  community,
+  log
 }: GetChallengeArgsInput): Promise<ChallengeResultInput> => {
+  // Every rejection is logged with its reason, so an owner can ask the node's getLogs why one publication
+  // was rejected. pkc-js tags `log` with the community's publicKey, the publication's signature and the
+  // challengeIndex. The buffer is readable by every client of the node's RPC server, so a line carries only
+  // the reason, never publication content, answers or options. A failure on the node's side (its settings,
+  // its RPC) goes to log.error; an author's mistake goes to log.
+  const reject = (reason: string): ChallengeResultInput => {
+    log("rejected tip:", reason);
+    return fail(reason);
+  };
+  const rejectAsError = (reason: string): ChallengeResultInput => {
+    log.error("rejected tip:", reason);
+    return fail(reason);
+  };
+
   // Only comments can carry a tip. Votes, edits and moderations pass untouched.
   const comment = challengeRequestMessage.comment;
   if (!comment) return { success: true };
@@ -355,7 +377,7 @@ const getChallenge = async ({
   // signed comment and shows them on the Comment instance under the same name, so an author could sign a
   // reply that carries its own `tip` and send no claim. Checked before anything else, claim or no claim.
   if ((comment as { tip?: unknown }).tip !== undefined) {
-    return fail("A comment cannot carry its own tip field. A tip is claimed with a challenge answer and written by the community.");
+    return reject("A comment cannot carry its own tip field. A tip is claimed with a challenge answer and written by the community.");
   }
 
   // The claim is this challenge's pre-answer: a JSON string the client put in the request's
@@ -369,28 +391,28 @@ const getChallenge = async ({
   try {
     settings = parseSettings(challengeSettings);
   } catch (e) {
-    return fail(`Invalid tipping challenge settings: ${(e as Error).message}`);
+    return rejectAsError(`Invalid tipping challenge settings: ${(e as Error).message}`);
   }
 
   let claim: TipClaim;
   try {
     claim = parseTipClaimAnswer(challengeAnswer);
   } catch (e) {
-    return fail(`Invalid tip: ${(e as Error).message}`);
+    return reject(`Invalid tip: ${(e as Error).message}`);
   }
 
   if (!comment.parentCid) {
-    return fail("A tip must be a reply to the comment being tipped. A post cannot carry a tip.");
+    return reject("A tip must be a reply to the comment being tipped. A post cannot carry a tip.");
   }
 
   const tokens = settings.tokens.filter((token) => token.chainId === claim.chainId);
   if (tokens.length === 0) {
-    return fail(`This community does not accept tips on chain ID ${claim.chainId}.`);
+    return reject(`This community does not accept tips on chain ID ${claim.chainId}.`);
   }
 
   const parent = community._dbHandler.queryComment(comment.parentCid);
   if (!parent) {
-    return fail("The comment being tipped was not found in this community.");
+    return reject("The comment being tipped was not found in this community.");
   }
 
   let tipperKeyAddress: string;
@@ -399,18 +421,18 @@ const getChallenge = async ({
     tipperKeyAddress = getKeyAddressFromPublicKey(comment.signature.publicKey);
     recipientKeyAddress = getKeyAddressFromPublicKey(parent.signature.publicKey);
   } catch (e) {
-    return fail(`Could not derive an author's key address: ${(e as Error).message}`);
+    return reject(`Could not derive an author's key address: ${(e as Error).message}`);
   }
 
   if (tipperKeyAddress === recipientKeyAddress) {
-    return fail("You cannot tip your own comment.");
+    return reject("You cannot tip your own comment.");
   }
 
   const nowSeconds = Math.floor(Date.now() / 1000);
 
   const tipperWallets = await collectProvenWallets({ author: comment.author, authorKeyAddress: tipperKeyAddress, nowSeconds });
   if (tipperWallets.addresses.length === 0) {
-    return fail(`You have no valid author.wallets entry to tip from. ${describeNoWallets(tipperWallets)}`);
+    return reject(`You have no valid author.wallets entry to tip from. ${describeNoWallets(tipperWallets)}`);
   }
 
   const recipientWallets = await collectProvenWallets({
@@ -419,7 +441,7 @@ const getChallenge = async ({
     nowSeconds
   });
   if (recipientWallets.addresses.length === 0) {
-    return fail(
+    return reject(
       `The author being tipped has no valid author.wallets entry on that comment. ${describeNoWallets(recipientWallets)}`
     );
   }
@@ -427,7 +449,7 @@ const getChallenge = async ({
   // A wallet the tipper has proven as their own is not somebody else's wallet, whoever else lists it.
   const receivers = recipientWallets.addresses.filter((address) => !includesAddress(tipperWallets.addresses, address));
   if (receivers.length === 0) {
-    return fail("You cannot tip your own wallet.");
+    return reject("You cannot tip your own wallet.");
   }
   const senders = tipperWallets.addresses;
 
@@ -436,8 +458,8 @@ const getChallenge = async ({
   try {
     client = await getConfirmedChainClient(settings.rpcUrls, claim.chainId);
   } catch (e) {
-    if (e instanceof ChainIdMismatchError) return fail(e.message);
-    return fail(`Could not confirm the RPC for chain ID ${claim.chainId}: ${describeRpcError(e)}`);
+    if (e instanceof ChainIdMismatchError) return rejectAsError(e.message);
+    return rejectAsError(`Could not confirm the RPC for chain ID ${claim.chainId}: ${describeRpcError(e)}`);
   }
 
   const parentCid = comment.parentCid;
@@ -446,12 +468,12 @@ const getChallenge = async ({
   const readClaimedTransaction = async (
     hash: string,
     label: string
-  ): Promise<{ tx: MinedTransaction } | { error: string }> => {
+  ): Promise<{ tx: MinedTransaction } | { error: string; rpcFailure?: true }> => {
     let tx: MinedTransaction | undefined;
     try {
       tx = await readTransaction({ client, hash });
     } catch (e) {
-      return { error: `Could not read the ${label} transaction from the chain: ${describeRpcError(e)}` };
+      return { error: `Could not read the ${label} transaction from the chain: ${describeRpcError(e)}`, rpcFailure: true };
     }
     if (!tx) {
       return { error: `The ${label} transaction is not mined yet. Wait for it to confirm, then publish again.` };
@@ -474,19 +496,22 @@ const getChallenge = async ({
     return { tx };
   };
 
+  const rejectTxResult = (result: { error: string; rpcFailure?: true }): ChallengeResultInput =>
+    result.rpcFailure ? rejectAsError(result.error) : reject(result.error);
+
   const tipTxResult = await readClaimedTransaction(claim.txHash, "tip");
-  if ("error" in tipTxResult) return fail(tipTxResult.error);
+  if ("error" in tipTxResult) return rejectTxResult(tipTxResult);
   const tipTx = tipTxResult.tx;
 
   const tip = findTip({ tx: tipTx, tokens, senders, receivers });
   if (!tip) {
-    return fail(
+    return reject(
       "The tip transaction does not transfer an accepted token from one of your proven wallets to a proven wallet of the author being tipped."
     );
   }
 
   if (tip.token.minAmount !== undefined && tip.value < BigInt(tip.token.minAmount)) {
-    return fail(`The tip is below this community's minimum of ${tip.token.minAmount} for that token.`);
+    return reject(`The tip is below this community's minimum of ${tip.token.minAmount} for that token.`);
   }
 
   const verified: VerifiedTip = {
@@ -514,7 +539,7 @@ const getChallenge = async ({
     let feeTx = tipTx;
     if (!sameTx) {
       const feeTxResult = await readClaimedTransaction(feeTxHash, "fee");
-      if ("error" in feeTxResult) return fail(feeTxResult.error);
+      if ("error" in feeTxResult) return rejectTxResult(feeTxResult);
       feeTx = feeTxResult.tx;
     }
 
@@ -524,7 +549,7 @@ const getChallenge = async ({
       // transaction the coin moves as an inner call that a standard RPC cannot show, and a native tip's
       // own transaction already spent its value on the recipient, so the fee needs its own transaction.
       if (sameTx) {
-        return fail(
+        return reject(
           "This tip owes the community a fee in the native coin, which must be a separate transaction. Send it to the fee recipient and put its hash in feeTxHash."
         );
       }
@@ -549,7 +574,7 @@ const getChallenge = async ({
 
     if (paid === undefined || paid < requiredFee.amount) {
       const feeTokenText = requiredFee.feeToken === undefined ? "the native coin" : `token ${requiredFee.feeToken}`;
-      return fail(
+      return reject(
         `This tip owes the community a fee of ${requiredFee.amount} in ${feeTokenText}, sent from one of your proven wallets to ${feeRecipient}. ` +
           (sameTx
             ? "No such transfer is in the tip transaction. Send it and put its hash in feeTxHash."
@@ -570,17 +595,21 @@ const getChallenge = async ({
     nowSeconds
   });
   if (claimResult) {
-    return fail(
+    return reject(
       `Transaction ${claimResult.conflict} has already been used for a tip in this community. A transaction can back one tip only.`
     );
   }
 
+  // Chain ID, hash and amount are public on chain anyway. Trace, so it stays out of default output.
+  log.trace("verified tip:", { chainId: verified.chainId, txHash: verified.txHash, amount: verified.amount ?? verified.tokenId });
   return { success: true, commentUpdate: { tip: verified } };
 };
 
-function ChallengeFileFactory(_args: { challengeSettings: CommunityChallengeSetting }): ChallengeFileInput {
+function ChallengeFileFactory(_args: { challengeSettings: CommunityChallengeSetting; log: ChallengeLog }): ChallengeFileInput {
   // Deliberately cheap and non-throwing: the factory runs on load as well as on edit, so throwing here
-  // would fail community startup rather than the offending edit.
+  // would fail community startup rather than the offending edit. Its log is unused: getChallenge and
+  // validateChallengeSettings log through the one pkc-js passes into each call, which carries that call's
+  // tags. Nothing here keeps a logger.
   return { getChallenge, optionInputs, type, description, validateChallengeSettings };
 }
 
