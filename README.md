@@ -656,9 +656,9 @@ The challenge remembers which transactions have backed a tip, per community and 
 
 The challenge logs through the logger pkc-js passes into each call, which pkc-js tags with the community's `publicKey`, the publication's `signature` and the challenge's `challengeIndex`. The lines land in the node's log buffer, so an owner can call `getLogs` (or `pkc.getLogs`) with a publication's signature to see why that one was rejected.
 
-- A rejected tip logs its reason, the same text the author receives. Failures on the node's side (unreadable settings, an RPC that fails or reports the wrong chain ID) are logged at `error` level, an author's mistakes at the default level.
+- A rejected tip logs its reason. When the reason the author receives quotes something the challenge did not write or check (a key of the claim, an `author.wallets` entry, a settings value), the log gets a fixed line instead, such as `Invalid tip claim.`. Failures on the node's side (unreadable settings, an RPC that fails or reports the wrong chain ID) are logged at `error` level, an author's mistakes at the default level.
 - A verified tip logs its chain ID, transaction hash and amount (or token ID) at `trace` level.
-- A publication that carries no claim logs nothing.
+- A publication that carries no claim logs nothing, unless it is a comment that [carries its own `tip` field](#a-comment-cannot-carry-tip), which is rejected and logged.
 
 Every client of the node's RPC server can read that buffer, so no line carries publication content, the claim as sent, or the challenge's options. RPC errors keep only their first line, since a full error can embed the RPC URL.
 

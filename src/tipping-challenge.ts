@@ -355,17 +355,20 @@ const getChallenge = async ({
   community,
   log
 }: GetChallengeArgsInput): Promise<ChallengeResultInput> => {
-  // Every rejection is logged with its reason, so an owner can ask the node's getLogs why one publication
-  // was rejected. pkc-js tags `log` with the community's publicKey, the publication's signature and the
-  // challengeIndex. The buffer is readable by every client of the node's RPC server, so a line carries only
-  // the reason, never publication content, answers or options. A failure on the node's side (its settings,
-  // its RPC) goes to log.error; an author's mistake goes to log.
-  const reject = (reason: string): ChallengeResultInput => {
-    log("rejected tip:", reason);
+  // Every rejection is logged, so an owner can ask the node's getLogs why one publication was rejected.
+  // pkc-js tags `log` with the community's publicKey, the publication's signature and the challengeIndex.
+  // The buffer is readable by every client of the node's RPC server, so a line never carries publication
+  // content, the claim as sent, or options. The author gets the full reason. The log gets the same text
+  // when the reason holds only fixed text and values this challenge has checked (chain IDs, hashes,
+  // amounts, public settings), and a fixed `logAs` line when the reason quotes anything else: a claim key,
+  // a wallet entry, a settings value. A failure on the node's side (its settings, its RPC) goes to
+  // log.error; an author's mistake goes to log.
+  const reject = (reason: string, logAs: string = reason): ChallengeResultInput => {
+    log("rejected tip:", logAs);
     return fail(reason);
   };
-  const rejectAsError = (reason: string): ChallengeResultInput => {
-    log.error("rejected tip:", reason);
+  const rejectAsError = (reason: string, logAs: string = reason): ChallengeResultInput => {
+    log.error("rejected tip:", logAs);
     return fail(reason);
   };
 
@@ -391,14 +394,17 @@ const getChallenge = async ({
   try {
     settings = parseSettings(challengeSettings);
   } catch (e) {
-    return rejectAsError(`Invalid tipping challenge settings: ${(e as Error).message}`);
+    return rejectAsError(
+      `Invalid tipping challenge settings: ${(e as Error).message}`,
+      "Invalid tipping challenge settings. validateChallengeSettings reports the details."
+    );
   }
 
   let claim: TipClaim;
   try {
     claim = parseTipClaimAnswer(challengeAnswer);
   } catch (e) {
-    return reject(`Invalid tip: ${(e as Error).message}`);
+    return reject(`Invalid tip: ${(e as Error).message}`, "Invalid tip claim.");
   }
 
   if (!comment.parentCid) {
@@ -421,7 +427,7 @@ const getChallenge = async ({
     tipperKeyAddress = getKeyAddressFromPublicKey(comment.signature.publicKey);
     recipientKeyAddress = getKeyAddressFromPublicKey(parent.signature.publicKey);
   } catch (e) {
-    return reject(`Could not derive an author's key address: ${(e as Error).message}`);
+    return reject(`Could not derive an author's key address: ${(e as Error).message}`, "Could not derive an author's key address.");
   }
 
   if (tipperKeyAddress === recipientKeyAddress) {
@@ -432,7 +438,10 @@ const getChallenge = async ({
 
   const tipperWallets = await collectProvenWallets({ author: comment.author, authorKeyAddress: tipperKeyAddress, nowSeconds });
   if (tipperWallets.addresses.length === 0) {
-    return reject(`You have no valid author.wallets entry to tip from. ${describeNoWallets(tipperWallets)}`);
+    return reject(
+      `You have no valid author.wallets entry to tip from. ${describeNoWallets(tipperWallets)}`,
+      "The tipper has no valid author.wallets entry."
+    );
   }
 
   const recipientWallets = await collectProvenWallets({
@@ -442,7 +451,8 @@ const getChallenge = async ({
   });
   if (recipientWallets.addresses.length === 0) {
     return reject(
-      `The author being tipped has no valid author.wallets entry on that comment. ${describeNoWallets(recipientWallets)}`
+      `The author being tipped has no valid author.wallets entry on that comment. ${describeNoWallets(recipientWallets)}`,
+      "The author being tipped has no valid author.wallets entry."
     );
   }
 

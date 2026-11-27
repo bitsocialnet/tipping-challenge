@@ -1059,6 +1059,33 @@ describe("logging", () => {
     expect(log.error).toHaveBeenCalledWith("rejected tip:", expect.stringMatching(/reports chain ID 11155111/));
   });
 
+  it("logs a fixed line, not the claim's text, for a malformed claim", async () => {
+    const request = await makeRequest(tipper, { tip: { chainId: 1, txHash: usdcTip(), "x\nINJECTED": 1 } });
+    expectFailure(await run(request), /unknown key "x\nINJECTED"/);
+    expect(log).toHaveBeenCalledWith("rejected tip:", "Invalid tip claim.");
+    expect(loggedLines(log).join("\n")).not.toMatch(/INJECTED/);
+  });
+
+  it("logs a fixed line, not the author's wallet entries, when no wallet verifies", async () => {
+    const request = await makeRequest(tipper, { tip: { chainId: 1, txHash: usdcTip() }, wallets: { PRIVATE_MARKER: null } });
+    expectFailure(await run(request), /PRIVATE_MARKER/);
+    expect(log).toHaveBeenCalledWith("rejected tip:", "The tipper has no valid author.wallets entry.");
+    expect(loggedLines(log).join("\n")).not.toMatch(/PRIVATE_MARKER/);
+  });
+
+  it("logs a fixed line, not the settings, when saved settings no longer parse", async () => {
+    const settings = buildSettings({ tokens: allTokens, rpcUrls: '{"https://rpc.example/SECRETKEY": "https://a.example"}' });
+    const request = await makeRequest(tipper, { tip: { chainId: 1, txHash: usdcTip() } });
+    expectFailure(await run(request, settings), /Invalid tipping challenge settings/);
+    expect(log.error).toHaveBeenCalledWith("rejected tip:", expect.stringMatching(/^Invalid tipping challenge settings\./));
+    expect(loggedLines(log).join("\n")).not.toMatch(/SECRETKEY|rpc\.example/);
+  });
+
+  it("logs the rejection of a comment that carries its own tip field, even with no claim", async () => {
+    expectFailure(await run(await withOwnTipField()), /cannot carry its own tip field/);
+    expect(log).toHaveBeenCalledWith("rejected tip:", expect.stringMatching(/cannot carry its own tip field/));
+  });
+
   it("logs a verified tip at trace level with its chain ID, hash and amount only", async () => {
     const txHash = usdcTip(7n);
     expect(await run(await makeRequest(tipper, { tip: { chainId: 1, txHash } }))).toMatchObject({ success: true });
