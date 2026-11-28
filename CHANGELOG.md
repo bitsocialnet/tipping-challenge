@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0](https://github.com/bitsocialnet/tipping-challenge/compare/v0.2.2...v0.3.0) (2026-11-28)
+
+### ⚠ BREAKING CHANGES
+
+* requires @pkcprotocol/pkc-js 0.0.165 or later. Older
+versions pass no log, so getChallenge would throw.
+
+### Features
+
+* log rejections through the log pkc-js passes into each call ([60e44e7](https://github.com/bitsocialnet/tipping-challenge/commit/60e44e7d037235fc4632be7504ce687cf7ca6445)), closes [pkcprotocol/pkc-js#626](https://github.com/pkcprotocol/pkc-js/issues/626) [#19](https://github.com/bitsocialnet/tipping-challenge/issues/19)
+
+### Bug Fixes
+
+* log a fixed line for rejection reasons that quote untrusted text ([930c9ee](https://github.com/bitsocialnet/tipping-challenge/commit/930c9eee6818c939603555607023f92b86601560))
+
 ## [0.2.2](https://github.com/bitsocialnet/tipping-challenge/compare/v0.2.1...v0.2.2) (2026-11-26)
 
 ### Bug Fixes
