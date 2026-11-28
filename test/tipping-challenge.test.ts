@@ -11,6 +11,8 @@ import {
   FakeChain,
   makeAuthor,
   makeCommunity,
+  loggedLines,
+  makeLog,
   makeRequest,
   newTxHash,
   PARENT_CID,
@@ -18,7 +20,8 @@ import {
   signWallet,
   uninstallFakeChain,
   type FakeCommunity,
-  type FakeTx
+  type FakeTx,
+  type TestLog
 } from "./helpers.js";
 
 // Placeholder contracts, not real tokens.
@@ -44,9 +47,11 @@ const allTokens = [native, usdc, nft];
 
 let chain: FakeChain;
 let community: FakeCommunity;
+let log: TestLog;
 
 beforeEach(async () => {
   chain = new FakeChain();
+  log = makeLog();
   chain.install();
   community = makeCommunity();
   await addParentComment(community, recipient);
@@ -65,7 +70,8 @@ const run = async (
     challengeIndex: 0,
     // What pkc-js passes: this challenge's own pre-answer.
     challengeAnswer: request.challengeAnswers?.["0"],
-    community: target.asCommunity()
+    community: target.asCommunity(),
+    log
   });
 
 const expectFailure = (result: ChallengeResultInput, message: RegExp): void => {
@@ -1020,5 +1026,71 @@ describe("a transaction backs one tip only", () => {
         /tip transaction does not end with the parent binding/
       );
     }
+  });
+});
+
+describe("logging", () => {
+  it("logs nothing for a publication that passes without a claim", async () => {
+    expect(await run(await makeRequest(tipper, {}))).toEqual({ success: true });
+    expect(loggedLines(log)).toEqual([]);
+  });
+
+  it("logs the reason of a rejection, and nothing at error level", async () => {
+    const request = await makeRequest(tipper, { tip: { chainId: 999_999, txHash: usdcTip() } });
+    const result = await run(request);
+    expectFailure(result, /does not accept tips on chain ID 999999/);
+    expect(log).toHaveBeenCalledWith("rejected tip:", (result as { error: string }).error);
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
+  it("logs an RPC failure at error level without the RPC URL", async () => {
+    chain.failWith = new Error("rate limited");
+    const settings = buildSettings({ tokens: allTokens, rpcUrls: "https://rpc.example/v2/SECRETKEY" });
+    const request = await makeRequest(tipper, { tip: { chainId: 1, txHash: usdcTip() } });
+    expectFailure(await run(request, settings), /Could not read the tip transaction from the chain/);
+    expect(log.error).toHaveBeenCalledWith("rejected tip:", expect.stringMatching(/Could not read the tip transaction/));
+    expect(loggedLines(log).join("\n")).not.toMatch(/SECRETKEY|rpc\.example/);
+  });
+
+  it("logs a chain ID mismatch at error level", async () => {
+    chain.reportChainId = 11155111;
+    const request = await makeRequest(tipper, { tip: { chainId: 1, txHash: usdcTip() } });
+    expectFailure(await run(request), /reports chain ID 11155111/);
+    expect(log.error).toHaveBeenCalledWith("rejected tip:", expect.stringMatching(/reports chain ID 11155111/));
+  });
+
+  it("logs a fixed line, not the claim's text, for a malformed claim", async () => {
+    const request = await makeRequest(tipper, { tip: { chainId: 1, txHash: usdcTip(), "x\nINJECTED": 1 } });
+    expectFailure(await run(request), /unknown key "x\nINJECTED"/);
+    expect(log).toHaveBeenCalledWith("rejected tip:", "Invalid tip claim.");
+    expect(loggedLines(log).join("\n")).not.toMatch(/INJECTED/);
+  });
+
+  it("logs a fixed line, not the author's wallet entries, when no wallet verifies", async () => {
+    const request = await makeRequest(tipper, { tip: { chainId: 1, txHash: usdcTip() }, wallets: { PRIVATE_MARKER: null } });
+    expectFailure(await run(request), /PRIVATE_MARKER/);
+    expect(log).toHaveBeenCalledWith("rejected tip:", "The tipper has no valid author.wallets entry.");
+    expect(loggedLines(log).join("\n")).not.toMatch(/PRIVATE_MARKER/);
+  });
+
+  it("logs a fixed line, not the settings, when saved settings no longer parse", async () => {
+    const settings = buildSettings({ tokens: allTokens, rpcUrls: '{"https://rpc.example/SECRETKEY": "https://a.example"}' });
+    const request = await makeRequest(tipper, { tip: { chainId: 1, txHash: usdcTip() } });
+    expectFailure(await run(request, settings), /Invalid tipping challenge settings/);
+    expect(log.error).toHaveBeenCalledWith("rejected tip:", expect.stringMatching(/^Invalid tipping challenge settings\./));
+    expect(loggedLines(log).join("\n")).not.toMatch(/SECRETKEY|rpc\.example/);
+  });
+
+  it("logs the rejection of a comment that carries its own tip field, even with no claim", async () => {
+    expectFailure(await run(await withOwnTipField()), /cannot carry its own tip field/);
+    expect(log).toHaveBeenCalledWith("rejected tip:", expect.stringMatching(/cannot carry its own tip field/));
+  });
+
+  it("logs a verified tip at trace level with its chain ID, hash and amount only", async () => {
+    const txHash = usdcTip(7n);
+    expect(await run(await makeRequest(tipper, { tip: { chainId: 1, txHash } }))).toMatchObject({ success: true });
+    expect(log.trace).toHaveBeenCalledWith("verified tip:", { chainId: 1, txHash, amount: "7" });
+    expect(log).not.toHaveBeenCalled();
+    expect(log.error).not.toHaveBeenCalled();
   });
 });
